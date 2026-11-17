@@ -14,10 +14,10 @@ expect mute 0
 expect learn 0
 expect store_writes 0
 
-# ---- the host: HELLO once a second until it answers (version 1, firmware 0.2, transport USB) ("hello")
+# ---- the host: HELLO once a second until it answers (version 1, firmware 0.3, transport USB) ("hello")
 sysex_out
 wait 1100
-expect_sysex F0 7D 4D 4F 01 41 01 00 02 00 F7
+expect_sysex F0 7D 4D 4F 01 41 01 00 03 00 F7
 expect host 0
 # HELLO_ACK ("hello_ack")
 sysex F0 7D 4D 4F 01 01 01 F7
@@ -337,7 +337,19 @@ tap OCT-
 wait 30
 expect tlabel 1
 expect tpage 0
+tapkey w9
+tapkey b7
+wait 30
 shot type_code.png
+tap OCT+
+wait 30
+shot type_code_signs.png
+tap OCT-
+press REC
+wait 700
+release REC
+wait 30
+expect line_len 0
 tap SEQ
 wait 30
 # COMPOSE: keys go on the line in silence, PLAY sends the line

@@ -13,7 +13,7 @@
 #include "tone.c"
 
 #define FW_MAJOR 0u
-#define FW_MINOR 2u
+#define FW_MINOR 3u
 
 /* ---------------------------------------------------------------- protocol --- */
 #define MO_VER 1u
@@ -1768,51 +1768,60 @@ static void key_page(void)
         key_text();
 }
 
+/* TYPE: the line typed over a keyboard of 16 white keys 15 px each, the black ones over their gaps. With the code
+ * on the keys the keyboard grows (126 px instead of 86) and the line shrinks to its last row, so each key holds its
+ * code down the key and its letter under it: the longest, 0 ----- and , --..--, are 38 px at 2 px a unit */
+static int32_t type_lamp_y(void) { return tlabel() ? 72 : 112; }
+
 static void type_page(void)
 {
     static const char *const PAGE[3] = {"LETTERS", "DIGITS + SIGNS", "PHRASES"};
     char t[8];
-    uint32_t i, n = slen(ui.line);
+    uint32_t i, n = slen(ui.line), first = 0;
     char cur = ptx.cur;
-    cv_begin(240, 80, C_BLACK);
-    for (i = 0; i < n; i++) {
+    int code = (int)tlabel();
+    int32_t top_h = code ? 40 : 80, kb_h = code ? 126 : 86, wh = kb_h - 2, bh = code ? 62 : 46, ly = code ? 24 : 64;
+    cv_begin(240, top_h, C_BLACK);
+    if (code && n > TG_COLS)
+        first = n - TG_COLS;
+    for (i = first; i < n; i++) {
+        uint32_t k = i - first;
         t[0] = ui.line[i] == ' ' ? '_' : ui.line[i];
         t[1] = 0;
-        cv_text(4 + (int32_t)(i % TG_COLS) * 10, 2 + (int32_t)(i / TG_COLS) * 20, &FONT_S, t,
+        cv_text(4 + (int32_t)(k % TG_COLS) * 10, 2 + (int32_t)(k / TG_COLS) * 20, &FONT_S, t,
                 ui.line[i] == ' ' ? C_DIM : C_OWN);
     }
     if (ui.tpage == 2u && ui.gloss)
-        cv_text(4, 46, &FONT_XS, ui.gloss, C_RX);
-    else if (cur && (visual() || tlabel()))
+        cv_text(4, code ? ly : 46, &FONT_XS, ui.gloss, C_RX);
+    else if (cur && !code && visual())
         draw_code(mo_code(cur), 120, 52, 6, C_RX);
-    {
-        int32_t x = cv_text(4, 64, &FONT_T, PAGE[ui.tpage], C_GRAY);
-        cv_text(x + 12, 64, &FONT_T, tcompose() ? "COMPOSE: PLAY SENDS" : "LIVE: EACH KEY GOES OUT",
+    if (!code || !(ui.tpage == 2u && ui.gloss)) {
+        int32_t x = cv_text(4, ly, &FONT_T, PAGE[ui.tpage], C_GRAY);
+        cv_text(x + 12, ly, &FONT_T, tcompose() ? "COMPOSE: PLAY SENDS" : "LIVE: EACH KEY GOES OUT",
                 tcompose() ? C_RX : C_DIM);
     }
     cv_blit(0, 32);
-    draw_lamp(112);
-    /* the keyboard: 16 white keys 15 px each, the black ones over their gaps */
-    cv_begin(240, 86, C_BLACK);
+    draw_lamp(type_lamp_y());
+    cv_begin(240, kb_h, C_BLACK);
     for (i = 0; i < 16u; i++) {
         uint32_t k = WHITE[i];
         int32_t x = (int32_t)i * 15;
         char c = ui.tpage < 2u ? type_char(k, ui.tpage) : 0;
-        cv_rect(x, 0, 14, 84, c && c == cur ? C_RX : RGB(200, 200, 206));
+        cv_rect(x, 0, 14, wh, c && c == cur ? C_RX : RGB(200, 200, 206));
         if (ui.tpage == 2u) {            /* a phrase: its name down the key */
             const char *p = type_phrase(k);
             uint32_t j, m = 0;
             for (j = 0; p && p[j] && m < 4u; j++)
                 if (p[j] != '<' && p[j] != '>' && p[j] != '?') {
                     t[0] = p[j], t[1] = 0;
-                    text_c(x + 7, 48 + (int32_t)m * 9, &FONT_T, t, C_BLACK);
+                    text_c(x + 7, wh - 36 + (int32_t)m * 9, &FONT_T, t, C_BLACK);
                     m++;
                 }
         } else {
             t[0] = c, t[1] = 0;
-            if (tlabel() && c && c != ' ')
-                draw_code_v(mo_code(c), x + 7, 49, 2, C_BLACK);
-            text_c(x + 7, 68, &FONT_XS, c == ' ' ? "_" : t, C_BLACK);
+            if (code && c && c != ' ')   /* under the black keys' reach (they end at 62) */
+                draw_code_v(mo_code(c), x + 7, 64, 2, C_BLACK);
+            text_c(x + 7, wh - (code ? 18 : 16), &FONT_XS, c == ' ' ? "_" : t, C_BLACK);
         }
     }
     for (i = 0; i < 11u; i++) {
@@ -1822,7 +1831,7 @@ static void type_page(void)
         while (w < 16u && WHITE[w] < k)
             w++;
         x = (int32_t)w * 15;
-        cv_rect(x - 6, 0, 12, 46, c && c == cur ? C_RX : RGB(40, 40, 46));
+        cv_rect(x - 6, 0, 12, bh, c && c == cur ? C_RX : RGB(40, 40, 46));
         if (ui.tpage == 2u) {
             const char *p = type_phrase(k);
             uint32_t j, m = 0;
@@ -1834,13 +1843,12 @@ static void type_page(void)
                 }
         } else {
             t[0] = c == ' ' ? '_' : c, t[1] = 0;
-            if (tlabel() && c && c != ' ')
+            if (code && c && c != ' ')   /* the code down the key, the letter under it */
                 draw_code_v(mo_code(c), x, 3, 2, C_WHITE);
-            else
-                text_c(x, 26, &FONT_XS, t, C_WHITE);
+            text_c(x, code ? bh - 17 : 26, &FONT_XS, t, C_WHITE);
         }
     }
-    cv_blit(0, 122);
+    cv_blit(0, type_lamp_y() + 10);
 }
 
 static void choices(int32_t y, const ln_card_t *c, int32_t oy)
@@ -2288,7 +2296,7 @@ static int32_t lamp_y(void)              /* where this page shows the lamp, 0 no
     if (ui.page == PG_KEY)
         return 88;
     if (ui.page == PG_TYPE)
-        return 112;
+        return type_lamp_y();
     if ((ui.page == PG_PRACTICE && (pr.ps == PS_CARD || pr.ps == PS_RESULT)) || ui.page == PG_RHYTHM
         || (ui.page == PG_LISTEN && ls.on))
         return 196;                      /* under the page (practice_at, rhythm_at, listen_at keep above 196) */
