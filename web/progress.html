@@ -186,15 +186,40 @@ function ready() {
   $("restore").disabled = !!old || !picked;
 }
 
+// Which port is the FM-1: the one whose input speaks our frames (HELLO or HEARTBEAT, once a second). Its name is
+// no guide: macOS keeps the name of the firmware it first saw on that USB device ("Felucca", "FM-1", ...).
+let midi = null, hunting = null;
+function ours(d) { return d[0] === 0xF0 && d[1] === HEAD[0] && d[2] === HEAD[1] && d[3] === HEAD[2]; }
+function outputFor(input) {
+  const outs = [...midi.outputs.values()];
+  return outs.find(o => o.name === input.name && o.manufacturer === input.manufacturer)
+      || outs.find(o => o.name === input.name) || (outs.length === 1 ? outs[0] : null);
+}
+function hunt() {
+  out = inp = null; firmware = null;
+  $("backup").disabled = $("restore").disabled = true;
+  const ins = [...midi.inputs.values()];
+  if (!ins.length) { status("no MIDI devices: is the FM-1 on USB (a data cable, no hub)?", "bad"); return; }
+  status("looking for the FM-1 running MORSE…", "dim");
+  for (const i of ins) i.onmidimessage = e => {
+    if (inp || !ours(Array.from(e.data))) return;
+    inp = i; out = outputFor(i);
+    for (const j of ins) if (j !== i) j.onmidimessage = null;
+    if (!out) { status(`found MORSE on "${i.name}" but not its output port`, "bad"); inp = null; return; }
+    inp.onmidimessage = onMessage;
+    onMessage(e);
+  };
+  clearTimeout(hunting);
+  hunting = setTimeout(() => {
+    if (!inp) status("no FM-1 running MORSE answered: is it on, on USB, and running MORSE 0.4 or later?", "bad");
+  }, 3000);
+}
+
 $("connect").onclick = async () => {
   try {
-    const m = await navigator.requestMIDIAccess({ sysex: true });
-    const find = list => [...list.values()].find(p => /MORSE/i.test(p.name || "")) || null;
-    out = find(m.outputs); inp = find(m.inputs);
-    if (!out || !inp) { status("no MIDI port named MORSE: is the FM-1 on USB and running MORSE?", "bad"); return; }
-    inp.onmidimessage = onMessage;
-    status("waiting for the FM-1 to say HELLO…", "dim");
-    setTimeout(() => { if ($("backup").disabled && !firmware) ready(); }, 2500);   // a host answered it already
+    midi = midi || await navigator.requestMIDIAccess({ sysex: true });
+    midi.onstatechange = e => { if (e.port.state === "connected" && !inp) hunt(); };   // plugged in, restarted
+    hunt();
   } catch (err) { status(`MIDI not available: ${err.message}`, "bad"); }
 };
 
