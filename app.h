@@ -13,7 +13,7 @@
 #define APP_SPLASH_RGB RGB(90, 200, 255)
 #define APP_BLOCK 256u                   /* frames per audio block: 5.8 ms at 44.1 kHz (the sidetone's jitter) */
 #define APP_TICK                         /* 1 kHz: the key, the keyer, the players, MIDI in and out */
-#define APP_SYSEX                        /* our frames from the host (host/morse/PROTOCOL.md) */
+#define APP_SYSEX                        /* our frames from the host (PROTOCOL.md in github.com/daviddwlee84/M-VAVE_FM-1 host/morse) */
 
 /* the settings and the flash cards' progress, one record (app.c rec_t), at 0xDA000: away from the 0xFC000 settings
  * sector SLOOP, Agent Deck and CTL-1 share (docs/hardware/flash-map.md). The panel calibration is the platform's */

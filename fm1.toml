@@ -1,14 +1,18 @@
 # Morse's build settings (fm1-base tools/build.py)
 name = "MORSE"
-id_prefix = "FM-1_13"          # package identity: dev FM-1_1300
+title = "MORSE"
+id_prefix = "FM-1_41"          # package identity: dev FM-1_4100, release 0.3 FM-1_41000300
 usb_manufacturer = "fm1-base"
 usb_product = "MORSE FM-1"     # host/morse finds the MIDI port by "MORSE"
 o2 = []
-include = ["../common"]        # hostlink, ledfx: shared with Conductor
+include = ["common"]           # hostlink, ledfx (from M-VAVE_FM-1 firmware/common, MIT)
 tagline = "a pocket Morse code machine"
-repo = "https://github.com/daviddwlee84/M-VAVE_FM-1"
+repo = "https://github.com/daviddwlee84/fm1-morse"
+site = "https://daviddwlee84.github.io/M-VAVE_FM-1/dev/morse/"
+install = "https://github.com/daviddwlee84/fm1-morse#install"
+screenshot = "docs/screen.png"
 licence = "MIT"
 credits = "Built on fm1-base by Charles Vestal. Koch order from LCWO; MIDI keying in the Vail adapter's format."
 author = "daviddwlee84"
-description = "Key Morse on the piano keys (straight key or iambic paddles) and read what you sent; type letters on the keys and hear them; learn the code with flash cards a few minutes a day, by sound, or silently by the lights. Keying goes over USB-MIDI in the Vail adapter's format."
+description = "Learn and use Morse code. Key on the piano keys (straight key or iambic paddles) and see what you sent, drill short and long presses, learn by sound with flash cards, listen to endless practice, type letters and CW phrases on the keys. Keying goes out over USB-MIDI in the Vail format. Settings and progress are kept; Koch order, Farnsworth spacing, a decoder that follows a beginner's hand."
 tags = ["utility"]

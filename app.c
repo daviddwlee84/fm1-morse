@@ -3,7 +3,7 @@
  * The 1 kHz tick does what needs the millisecond: the key and the keyer, the two players, MIDI in and out, the
  * sidetone's gates; it leaves key-down / key-up events with their times in a ring. The main loop decodes them, runs
  * the pages (flash cards, listening, rhythm drills), talks to the host and draws.
- * Protocol with the host: host/morse/PROTOCOL.md (the numbers below match host/morse/protocol.py). */
+ * Protocol with the host: PROTOCOL.md in github.com/daviddwlee84/M-VAVE_FM-1 host/morse (the numbers below match its host/morse/protocol.py). */
 #include "fastmath.h"
 #include "hostlink.c"
 #include "ledfx.c"

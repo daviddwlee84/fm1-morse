@@ -1,0 +1,11 @@
+{
+  "what": "Learn and use Morse code. Key on the piano keys (straight key or iambic paddles) and see what you sent, drill short and long presses, learn by sound with flash cards, listen to endless practice, type letters and CW phrases on the keys. Keying goes out over USB-MIDI in the Vail format.",
+  "author": "daviddwlee84",
+  "kinds": [
+    "other"
+  ],
+  "cheat": "https://github.com/daviddwlee84/fm1-morse#controls",
+  "image": "docs/screen.png",
+  "color": "#5AC8FF",
+  "sounds": "none"
+}

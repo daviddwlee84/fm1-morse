@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Morse's words for a screen reader (fm1-reader): the text on the screen <TAB> what to say.
-# url: https://daviddwlee84.github.io/M-VAVE_FM-1/dev/morse/
+# url: https://raw.githubusercontent.com/daviddwlee84/fm1-morse/main/web/words/
 MORSE	morse
 WPM	words per minute
 DAH:DIT	dah to dit
