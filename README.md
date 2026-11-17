@@ -5,6 +5,9 @@ A pocket Morse code machine for the [M-VAVE FM-1](https://www.m-vave.com/), buil
 sent, drill short and long presses, learn the code by sound with flash cards, listen to endless
 practice, type letters and CW phrases on the keys. GPL-3.0-or-later.
 
+**[MORSE on the web](https://daviddwlee84.github.io/fm1-morse/web/)**: see what your FM-1 reads, send it
+text to copy, back up and restore your progress. Chrome or Edge, the FM-1 on USB, nothing to install.
+
 ![MORSE on the FM-1](docs/screen.png)
 
 ## What it does
@@ -83,8 +86,8 @@ The progress lives on the FM-1 at `0xDA000` (below). Another firmware may keep i
 (SLOOP 2.8.5 kept it in our test; going back to stock V15 does not), so back it up before
 switching. MORSE 0.4 and later:
 
-- In Chrome or Edge: [the progress page](https://daviddwlee84.github.io/fm1-morse/web/progress.html)
-  (or `web/progress.html` from this repository, opened from your disk): *Download the progress*,
+- In Chrome or Edge: [MORSE on the web](https://daviddwlee84.github.io/fm1-morse/web/)
+  (or `web/index.html` from this repository, opened from your disk): *Download the progress*,
   later *Send it to the FM-1*.
 - Or on the command line with the host from
   [M-VAVE_FM-1](https://github.com/daviddwlee84/M-VAVE_FM-1): `morse backup FILE.json`,
@@ -152,7 +155,7 @@ python3 fm1-base/tools/build.py .                 # the device package (JieLi to
 | `app.c` | the pages, the 1 kHz tick (key, keyer, players, MIDI), storage, drawing |
 | `common/` | hostlink (SysEx with a host over USB / BLE) and ledfx (LED patterns) |
 | `tests/` | `morse_test.c` for the platform-free parts, `basic.txt` for fm1-base's host simulator |
-| `web/` | `progress.html` (back up / restore over Web MIDI), `words/` (the screen reader's words) |
+| `web/` | `index.html` (MORSE on the web: live text both ways, back up / restore, over Web MIDI), `words/` (the screen reader's words) |
 | `docs/` | `screen.png` (the Hub's card), `screens/` (this page) |
 
 Development and the host program live in
