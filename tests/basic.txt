@@ -439,7 +439,7 @@ wait 30
 expect page 6
 shot chart.png
 
-# ---- PRACTICE: three new letters shown, then asked; one missed comes back at the end
+# ---- PRACTICE: three new letters shown, then asked, then asked again later; one missed comes back at the end
 tap HOME
 wait 30
 turn SELECT -5
@@ -480,19 +480,26 @@ shot result_wrong.png
 wait 3000
 answer right
 wait 2000
+# the three new ones once more (0.4: weak cards repeat later in the round), then the missed one again
+answer right
+wait 2000
+answer right
+wait 2000
+answer right
+wait 2000
 answer right
 wait 2000
 expect ps 3
 expect round 1
-expect answered 4
-expect streak 0
+expect answered 7
+expect streak 1
 shot done.png
 
 # ---- it all comes back after a power cycle
 reboot
 wait 600
 expect round 1
-expect answered 4
+expect answered 7
 expect ps 0
 expect send 10
 expect preset 0
@@ -513,7 +520,7 @@ expect ps 1
 answer_all right
 expect ps 3
 expect round 2
-expect streak 1
+expect streak 2
 shot done_muted.png
 
 # ---- a round answered as a player would: picks on the keys, and the keyed cards (send it, key what you hear)
@@ -590,7 +597,7 @@ wait 3500
 expect ps 3
 expect round 4
 expect miss 0
-expect streak 3
+expect streak 4
 shot done_keyed.png
 expect store_writes <20
 

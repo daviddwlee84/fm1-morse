@@ -74,6 +74,9 @@ A longer guide (Traditional Chinese):
 6. Already know some? **SELECT → TEST** on the PRACTICE start page, or edit the CHART. Rusty? CHART
    edit, `FX`: everything one box back comes round sooner.
 
+Why it teaches this way (Koch, Farnsworth, instant character recognition, Leitner boxes), with
+sources: [LEARNING.md](LEARNING.md).
+
 ## Your progress: back up and restore
 
 The progress lives on the FM-1 at `0xDA000` (below). Another firmware may keep it or overwrite it

@@ -321,12 +321,13 @@ static void test_learn(void)
         }
         CHECK(hit == 1 && c->opt[c->right] == c->ch, "the right one there once");
     }
-    CHECK(r.n == 6, "a first round: 3 shown, 3 asked (%u)", r.n);
+    CHECK(r.n == 9, "a first round: 3 shown, 3 asked, the 3 new asked again later (%u)", r.n);
+    CHECK(r.card[6].again && r.card[7].again && r.card[8].again && !r.card[3].again, "the repeats at the end");
     /* all right */
     while ((c = ln_card(&r)) != 0)
         ln_answer(&s, &r, 1);
     CHECK(ln_finish(&s, &r) == 0 && s.round == 1 && s.streak == 1, "round counted, streak 1");
-    CHECK(s.box[0][LN_REC] == 1 && s.last[0][LN_REC] == 0, "K in box 1");
+    CHECK(s.box[0][LN_REC] == 1 && s.last[0][LN_REC] == 0, "K in box 1, not 2: the repeat does not move it again");
     CHECK(ln_due(&s, 0, LN_REC) == 0, "box 1 not due one round later");
     CHECK(ln_due(&s, 0, LN_SEND) == 1, "sending K is due once it was recognised");
     CHECK(ln_new_count(&s) == 2, "R E still new");
@@ -547,6 +548,26 @@ static void test_learn_hand(void)
     n = ln_place_apply(&s, &r);
     CHECK(s.open == 10 && n == 5 && s.box[5][LN_REC] == 3 && s.box[10][LN_REC] == 0 && ln_valid(&s),
           "group 2 opened and known; group 3 stays shut (%u %u)", s.open, n);
+    /* weak ones repeat before strong ones fill */
+    ln_init(&s);
+    s.open = 10;
+    s.round = 20;
+    for (i = 0; i < 10; i++) {
+        s.box[i][LN_REC] = i < 5 ? 4 : 0;   /* K M U R E known, S N A P T new-ish */
+        s.box[i][LN_SEND] = i < 5 ? 3 : 0;
+        s.last[i][LN_REC] = s.last[i][LN_SEND] = 19;
+    }
+    ln_build(&s, &r, 20, 0u, 5);
+    {
+        uint32_t weakn = 0, strongn = 0;
+        for (i = 0; i < r.n; i++)
+            if (r.card[i].ch >= 5)
+                weakn++;
+            else
+                strongn++;
+        CHECK(r.n == 20 && weakn == 20 && strongn == 0,
+              "ten weak cards due, each twice; no known letter as fill (%u weak, %u known)", weakn, strongn);
+    }
     /* a backup */
     s.answered = 1234, s.right = 1000, s.streak = 3;
     ln_blob(&s, blob);

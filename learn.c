@@ -210,16 +210,49 @@ void ln_build(const ln_state_t *s, ln_round_t *r, uint32_t n, uint32_t flags, ui
         }
         key[j] = k, qch[j] = c, qdir[j] = dd;
     }
-    if (nq > n)
-        nq = n > first ? n : first;
-    for (i = nq; i > 1u; i--) {          /* asked in a shuffled order */
-        uint32_t k = ln_rand(&r->rng) % i;
-        uint8_t c = qch[i - 1u], dd = qdir[i - 1u];
-        qch[i - 1u] = qch[k], qdir[i - 1u] = qdir[k];
-        qch[k] = c, qdir[k] = dd;
+    {
+        /* the new and the due first; then the weak ones of them (box 0-1, the new ones too) once more later in
+         * the round, like a deck that repeats a new card the day it comes; only then the rest, weakest first */
+        uint32_t ndue = first, base, weak[LN_N * LN_NDIR], nw = 0, nrep, nfill;
+        while (ndue < nq && key[ndue] < 0x10000000u)
+            ndue++;
+        base = ndue > n ? (n > first ? n : first) : ndue;
+        for (i = 0; i < base; i++)
+            if (s->box[qch[i]][qdir[i]] <= 1u)
+                weak[nw++] = i;
+        nrep = nw < (n > base ? n - base : 0u) ? nw : (n > base ? n - base : 0u);
+        nfill = nq - ndue;
+        if (nfill > n - base - nrep)
+            nfill = n - base - nrep;
+        for (i = 0; i < nfill; i++) {    /* the fill moves up behind the base */
+            qch[base + i] = qch[ndue + i];
+            qdir[base + i] = qdir[ndue + i];
+        }
+        {
+            uint8_t rch[LN_N * LN_NDIR], rdir[LN_N * LN_NDIR];
+            uint32_t m = base + nfill;
+            for (i = 0; i < nrep; i++)
+                rch[i] = qch[weak[i]], rdir[i] = qdir[weak[i]];
+            for (i = m; i > 1u; i--) {   /* asked in a shuffled order */
+                uint32_t k = ln_rand(&r->rng) % i;
+                uint8_t c = qch[i - 1u], dd = qdir[i - 1u];
+                qch[i - 1u] = qch[k], qdir[i - 1u] = qdir[k];
+                qch[k] = c, qdir[k] = dd;
+            }
+            for (i = 0; i < m; i++)
+                ln_add(s, r, qch[i], qdir[i], flags);
+            for (i = nrep; i > 1u; i--) {
+                uint32_t k = ln_rand(&r->rng) % i;
+                uint8_t c = rch[i - 1u], dd = rdir[i - 1u];
+                rch[i - 1u] = rch[k], rdir[i - 1u] = rdir[k];
+                rch[k] = c, rdir[k] = dd;
+            }
+            for (i = 0; i < nrep; i++) { /* the second time: right does not move it a second box */
+                ln_add(s, r, rch[i], rdir[i], flags);
+                r->card[r->n - 1u].again = 1;
+            }
+        }
     }
-    for (i = 0; i < nq; i++)
-        ln_add(s, r, qch[i], qdir[i], flags);
 }
 
 const ln_card_t *ln_card(const ln_round_t *r) { return r->at < r->n ? &r->card[r->at] : 0; }
