@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* learn: flash cards for Morse, the way a phrasebook or a kana deck works. Each character has two cards, recognise
  * it (hear it, or see its code, and name it) and send it (see it, key it), each in a Leitner box 0..5: right moves
  * it up a box, wrong sends it back to 0, and box n comes back every 2^n rounds. The FM-1 has no clock that lives

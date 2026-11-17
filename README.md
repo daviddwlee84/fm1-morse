@@ -3,7 +3,7 @@
 A pocket Morse code machine for the [M-VAVE FM-1](https://www.m-vave.com/), built on
 [fm1-base](https://github.com/charlesvestal/fm1-base). Key on the piano keys and read what you
 sent, drill short and long presses, learn the code by sound with flash cards, listen to endless
-practice, type letters and CW phrases on the keys. MIT.
+practice, type letters and CW phrases on the keys. GPL-3.0-or-later.
 
 ![MORSE on the FM-1](docs/screen.png)
 
@@ -102,6 +102,12 @@ submodule.
 
 ## License
 
-MIT (see `LICENSE`). fm1-base, in `fm1-base/`, is MPL-2.0. The Koch order is LCWO's; the MIDI
-keying follows the Vail adapter's published format. Everything you hear is generated in code: no
-samples.
+GPL-3.0-or-later (see `LICENSE`): you may share and change it, and what you build from it and
+share must stay open too. Versions up to commit `57ea786` were published under MIT and stay
+available under it.
+
+- `common/` (hostlink, ledfx) is MIT, shared with other firmwares in
+  [M-VAVE_FM-1](https://github.com/daviddwlee84/M-VAVE_FM-1).
+- fm1-base, in `fm1-base/`, is MPL-2.0 (its files stay under it).
+- The Koch order is LCWO's; the MIDI keying follows the Vail adapter's published format.
+- Everything you hear is generated in code: no samples.

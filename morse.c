@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* morse: see morse.h. No platform, no libc: part of the app's unity build and of tests/morse_test.c. */
 #include "morse.h"
 

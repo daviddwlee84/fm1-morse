@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* tone: the sidetone, two sine voices keyed on and off without a click (a 5 ms raised ramp each way), one for what
  * this FM-1 sends and one for what it receives, at different pitches.
  *

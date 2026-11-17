@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Morse: see app.h. Part of fm1-base's unity build, after the platform (gfx.c, announce.c in scope).
  * The 1 kHz tick does what needs the millisecond: the key and the keyer, the two players, MIDI in and out, the
  * sidetone's gates; it leaves key-down / key-up events with their times in a ring. The main loop decodes them, runs

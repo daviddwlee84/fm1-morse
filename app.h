@@ -1,10 +1,10 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Morse: the FM-1 as a pocket Morse code machine. Key on the piano keys (a straight key, or two halves as iambic
  * paddles) and read what you sent; type letters on the keys and hear them; learn the code with flash cards a few
  * minutes at a time (Leitner boxes, Koch order); keep it silent and read the lights instead. Keying goes out and comes
  * in as USB-MIDI note 0 on channel 1, the Vail adapter's format, so vailmorse.com and its training tools take it.
  * A host program (host/morse) can type what you send into the computer and send text to play.
- * Built on fm1-base (MPL-2.0, its headers); this app and firmware/common are MIT. */
+ * Built on fm1-base (MPL-2.0, its headers). This app is GPL-3.0-or-later; common/ (hostlink, ledfx) is MIT. */
 #pragma once
 #include <stdint.h>
 #include "plat.h"

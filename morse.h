@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* morse: Morse code without a platform. The code table, timing (PARIS, Farnsworth), a text player, an iambic keyer
  * and an adaptive decoder, all driven by a 1 ms tick or by durations, so the same code runs in fm1-base's timer
  * interrupt and in a unit test on the computer (tests/morse_test.c).

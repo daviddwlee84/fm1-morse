@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* content: what the LISTEN page plays and the TYPE page's phrases. Lines made up on the spot from small lists:
  * groups of the letters you have open (Koch), common English words, a made-up QSO between two random stations,
  * the usual CW abbreviations with what they mean, and proverbs (old sayings, nobody's text). No platform, no libc. */

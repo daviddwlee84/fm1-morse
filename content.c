@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* content: see content.h. Uses learn.h's Koch order for the groups. */
 #include "content.h"
 #include "learn.h"

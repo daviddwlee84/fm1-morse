@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Morse's words for a screen reader (fm1-reader): the text on the screen <TAB> what to say.
 # url: https://raw.githubusercontent.com/daviddwlee84/fm1-morse/main/web/words/
 MORSE	morse

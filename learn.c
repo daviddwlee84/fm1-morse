@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* learn: see learn.h. Needs morse.h's codes (how alike two characters sound, for the wrong choices). */
 #include "learn.h"
 #include "morse.h"

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* morse.c and learn.c on the computer: the code table, timing, player, keyer, decoder and flash cards.
  *   just morse-unit */
 #include <stdio.h>
