@@ -240,7 +240,8 @@ $("backup").onclick = () => {
       const p = unblob(w.slice(1, -2));
       const a = document.createElement("a");
       a.href = URL.createObjectURL(new Blob([toJSON(p)], { type: "application/json" }));
-      a.download = `fm1-morse-progress-${new Date().toISOString().slice(0, 10)}.json`;
+      const t = new Date(), day = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
+      a.download = `fm1-morse-progress-${day}.json`;   // the local date, not UTC's
       a.click();
       show(p, "On the FM-1 (saved)");
       ready();
