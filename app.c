@@ -13,12 +13,19 @@
 #include "tone.c"
 
 #define FW_MAJOR 0u
-#define FW_MINOR 3u
+#define FW_MINOR 4u
 
 /* ---------------------------------------------------------------- protocol --- */
 #define MO_VER 1u
-enum { T_HELLO_ACK = 0x01, T_TEXT, T_STOP };
-enum { T_HELLO = 0x41, T_HEARTBEAT, T_CHAR };
+enum { T_HELLO_ACK = 0x01, T_TEXT, T_STOP, T_PROG_REQ, T_PROG_LOAD };   /* PROG: firmware 0.4 and later */
+enum { T_HELLO = 0x41, T_HEARTBEAT, T_CHAR, T_PROG, T_PROG_DONE };
+/* a progress backup on the wire: a format byte, ln_blob's bytes, a CRC-16/CCITT of both; cut into chunks of
+ * PROG_CHUNK bytes, each frame <index> <count> and the chunk with its high bits gathered (8 bytes for each 7) */
+#define PROG_FORMAT 1u
+#define PROG_N (1u + LN_BLOB_N + 2u)
+#define PROG_CHUNK 49u
+#define PROG_FRAMES ((PROG_N + PROG_CHUNK - 1u) / PROG_CHUNK)
+enum { PD_LOADED, PD_DECLINED, PD_BAD };   /* T_PROG_DONE's answer to a load */
 /* Vail's MIDI keying (vail-adapter docs/MIDI_INTEGRATION_SPEC.md): channel 1, note 0 a timed key-down */
 #define MIDI_KEY_ON (0x09u | 0x90u << 8 | 0x00u << 16 | 0x7Fu << 24)
 #define MIDI_KEY_OFF (0x08u | 0x80u << 8 | 0x00u << 16 | 0x00u << 24)
@@ -48,7 +55,8 @@ typedef struct {
     uint8_t learn;                       /* LM_* */
     uint8_t look;                        /* bits 0-1 KEY's view (KV_*), bit 2 TYPE's keys show the code, bits 3-4
                                           * TYPE's layout (TL_*), bit 5 LISTEN hides the text, bit 6 TYPE composes
-                                          * (a line sent with PLAY) instead of sending each key */
+                                          * (a line sent with PLAY) instead of sending each key, bit 7 PRACTICE
+                                          * judges keyed answers strictly (by the send speed, as 0.3 did) */
     uint16_t pitch;                      /* Hz 300..1200 */
     uint8_t send;                        /* sending: the keyer's speed and where the decoder starts, 5..40 (0 in
                                           * a 0.1 record: the default) */
@@ -69,6 +77,7 @@ static uint32_t tlabel(void) { return SET.look >> 2 & 1u; }
 static uint32_t tlayout(void) { return SET.look >> 3 & 3u; }
 static uint32_t lhide(void) { return SET.look >> 5 & 1u; }
 static uint32_t tcompose(void) { return SET.look >> 6 & 1u; }
+static uint32_t strict(void) { return SET.look >> 7 & 1u; }
 static void look_set(uint32_t shift, uint32_t mask, uint32_t v)
 {
     SET.look = (uint8_t)((SET.look & ~(mask << shift)) | (v & mask) << shift);
@@ -93,7 +102,7 @@ static int set_valid(const set_t *s)
 {
     return s->wpm >= 5u && s->wpm <= 40u && s->eff >= 5u && s->eff <= s->wpm && s->keyer < MO_NKEYER && s->swap <= 1u
            && s->mute <= 1u && s->cards >= 10u && s->cards <= 30u && s->learn <= LM_VISUAL && s->pitch >= 300u
-           && s->pitch <= 1200u && (s->look & 3u) < KV_N && (s->look >> 3 & 3u) < TL_N && !(s->look >> 7)
+           && s->pitch <= 1200u && (s->look & 3u) < KV_N && (s->look >> 3 & 3u) < TL_N
            && s->send >= 5u && s->send <= 40u && s->prog < LP_N;
 }
 
@@ -197,7 +206,35 @@ static struct {
     uint32_t ratio10;                    /* the keyed answer's dah:dit */
     uint32_t until;                      /* PS_RESULT: the next card at */
     uint8_t active;                      /* a round under way */
+    uint8_t res;                         /* LN_RIGHT / LN_WRONG / LN_ALMOST: the last answer */
+    uint8_t test;                        /* the start page's choice: 0 a round, 1 a placement test */
+    uint8_t hand;                        /* the own decoder holds this hand's speed (carried from card to card) */
+    uint32_t unit0;                      /* the hand's dit when the answer began, ms */
+    /* the keyed answer as keyed: marks and the gaps before them, ms */
+    uint16_t am[8], ag[8];
+    uint8_t an, has_j;
+    uint8_t peek;                        /* SEQ: the code shown on this new letter / answer (learning by sound) */
+    uint16_t pend;                       /* the gap before the mark now down */
+    uint32_t a_up;                       /* the last mark ended at */
+    char read[4];                        /* what the decoder read meanwhile */
+    mo_judge_t j;
 } pr;
+
+/* a question on the screen that only PLAY (yes) or HOME (no) answers: changes to the progress never happen by a
+ * stray key */
+enum { ASK_NONE, ASK_SAVE, ASK_LOAD, ASK_PLACE };
+static struct {
+    uint8_t ask;
+    uint8_t edit, dirty;                 /* CHART: editing a copy, changed */
+    uint32_t sel_t;                      /* CHART edit: SEL went down at (held: reset), 0 up */
+    ln_state_t draft;                    /* CHART's copy; ASK_LOAD's backup */
+} pg;
+
+static struct {                          /* a progress backup going out, coming in */
+    uint8_t tx_on, tx_i;
+    uint8_t rx_next;                     /* the chunk expected next */
+    uint8_t buf[PROG_FRAMES * PROG_CHUNK];
+} prog;
 
 static const uint8_t WHITE[16] = PLAT_WHITE_KEYS;
 static const uint8_t BLACK[11] = PLAT_BLACK_KEYS;
@@ -521,6 +558,7 @@ static void tim_push(char c)             /* a letter read: its row for the TIMIN
 }
 
 static void practice_keyed(char c);
+static void practice_edge(int down, uint32_t t, uint32_t ms);
 static void rhythm_mark(uint32_t mark, uint32_t gap);
 
 static void emit(uint32_t src, char c)
@@ -570,6 +608,8 @@ static void read_events(void)            /* the tick's events into the decoders 
                 gap = e.t - dsrc[e.src].t_up + bias;
                 n = mo_dec_gap(&dsrc[e.src].dec, gap, out);
             }
+            if (e.src == SRC_OWN)
+                practice_edge(1, e.t, gap);
             dsrc[e.src].t_down = e.t;
         } else if (dsrc[e.src].down) {
             uint32_t mark = e.t - dsrc[e.src].t_down;
@@ -577,6 +617,7 @@ static void read_events(void)            /* the tick's events into the decoders 
             mo_dec_mark(&dsrc[e.src].dec, mark);
             dsrc[e.src].t_up = e.t;
             if (e.src == SRC_OWN) {
+                practice_edge(0, e.t, mark);
                 if (tim.live.n < TR_EL) {
                     tim.live.mark[tim.live.n] = (uint16_t)(mark > 0xFFFFu ? 0xFFFFu : mark);
                     tim.live.gap[tim.live.n] = tim.live.n ? tim.next_gap : 0u;
@@ -607,6 +648,7 @@ static void read_events(void)            /* the tick's events into the decoders 
 }
 
 /* ---------------------------------------------------------------- the host --- */
+static void prog_in(const uint8_t *d, uint32_t len);
 static int host_frame(const uint8_t *p, uint32_t n, int transport)
 {
     uint8_t t;
@@ -632,6 +674,13 @@ static int host_frame(const uint8_t *p, uint32_t n, int transport)
     case T_STOP:
         play_stop(&prx);
         break;
+    case T_PROG_REQ:                     /* the progress, out (nothing changes here) */
+        prog.tx_on = 1;
+        prog.tx_i = 0;
+        break;
+    case T_PROG_LOAD:
+        prog_in(d, len);
+        break;
     default:
         break;
     }
@@ -643,8 +692,8 @@ int app_sysex(const uint8_t *p, uint32_t n) { return host_frame(p, n, HL_USB); }
 /* ------------------------------------------------------------- the pages --- */
 static void inputs_for_page(void)        /* who the keys and MIDI belong to on this page */
 {
-    key_input = ui.page == PG_KEY || ui.page == PG_RHYTHM
-                || (ui.page == PG_PRACTICE && pr.ps == PS_CARD && pr.answer_ok);
+    key_input = !pg.ask && (ui.page == PG_KEY || ui.page == PG_RHYTHM
+                            || (ui.page == PG_PRACTICE && pr.ps == PS_CARD && pr.answer_ok));
     own_midi = ui.page == PG_KEY;
     ptx_midi = ui.page == PG_TYPE;
 }
@@ -681,6 +730,48 @@ static void own_reset(void)              /* the decoder for a keyed answer, at t
     mo_dec_init(&dsrc[SRC_OWN].dec, mo_dit_ms(SET.send), mo_dit_ms(SET.send));
 }
 
+/* the keying is the answer from now: strictly, the decoder at the send speed, as 0.3 did; else the hand's speed
+ * carried from the last card (the first card of a round: between the hearing and the send speed, since a hand
+ * copies what it hears) */
+static void hand_ready(void)
+{
+    mo_dec_t *d = &dsrc[SRC_OWN].dec;
+    if (strict())
+        own_reset();
+    else if (!pr.hand) {
+        uint32_t dit = (mo_dit_ms(SET.wpm) + mo_dit_ms(SET.send)) / 2u;
+        mo_dec_init(d, dit, dit);
+        pr.hand = 1;
+    } else
+        mo_dec_restart(d);
+    pr.unit0 = mo_dec_unit(d);
+    pr.an = 0;
+    pr.has_j = 0;
+    pr.read[0] = 0;
+}
+
+static int capturing(void)               /* the keys are taken as a keyed answer now */
+{
+    const ln_card_t *c = ln_card(&pr.r);
+    return ui.page == PG_PRACTICE && pr.ps == PS_CARD && c && card_key(c) && pr.answer_ok;
+}
+
+static void practice_edge(int down, uint32_t t, uint32_t ms)   /* own key: down after a gap of ms, up after ms */
+{
+    if (!capturing())
+        return;
+    if (down)
+        pr.pend = (uint16_t)(pr.an ? (ms > 0xFFFFu ? 0xFFFFu : ms) : 0u);
+    else {
+        if (pr.an < 8u) {
+            pr.am[pr.an] = (uint16_t)(ms > 0xFFFFu ? 0xFFFFu : ms);
+            pr.ag[pr.an] = pr.pend;
+            pr.an++;
+        }
+        pr.a_up = t;
+    }
+}
+
 static void card_present(void)
 {
     const ln_card_t *c = ln_card(&pr.r);
@@ -688,13 +779,23 @@ static void card_present(void)
     pr.answer_ok = 0;
     pr.got = 0;
     pr.pick = 0;
+    pr.an = 0;
+    pr.has_j = 0;
+    pr.peek = 0;
     if (!c) {
-        pr.opened = (uint8_t)ln_finish(&rec.ln, &pr.r);
         pr.active = 0;
         pr.ps = PS_DONE;
-        rec_save();
-        if (pr.opened)
-            app_say("NEW LETTERS", "");
+        if (pr.r.place) {                /* a placement test: only what it found, and only if you say so */
+            uint32_t n = ln_place_count(&pr.r);
+            if (n)
+                pg.ask = ASK_PLACE;
+            pr.opened = 0;
+        } else {
+            pr.opened = (uint8_t)ln_finish(&rec.ln, &pr.r);
+            rec_save();
+            if (pr.opened)
+                app_say("NEW LETTERS", "");
+        }
         inputs_for_page();
         ui.redraw |= R_ALL;
         return;
@@ -706,7 +807,6 @@ static void card_present(void)
         play(&ptx, s);
     } else if (card_sounds(c))
         play_char(&ptx, ch);
-    own_reset();
     inputs_for_page();
     ui.redraw |= R_ALL;
 }
@@ -714,43 +814,78 @@ static void card_present(void)
 static void practice_start(void)
 {
     uint32_t flags = (SET.mute ? LN_MUTED : 0u) | (visual() ? LN_VISUAL : 0u);
+    if (pr.test) {
+        if (rec.ln.open >= LN_N) {
+            app_say("ALL OPEN", "NOTHING TO TEST");
+            return;
+        }
+        flags |= LN_PLACE;
+    }
     ln_build(&rec.ln, &pr.r, SET.cards, flags, plat_ms() * 2654435761u + rec.ln.round);
     pr.active = 1;
     pr.opened = 0;
+    pr.hand = 0;
     card_present();
 }
 
-static void practice_answer(int right)
+static void practice_answer(int res)
 {
     const ln_card_t *c = ln_card(&pr.r);
+    uint32_t wait;
     if (!c || pr.ps != PS_CARD)
         return;
     if (c->type == CARD_NEW) {           /* only shown: on to the next */
-        ln_answer(&rec.ln, &pr.r, 1);
+        ln_answer(&rec.ln, &pr.r, LN_RIGHT);
         play_stop(&ptx);
         card_present();
         return;
     }
-    pr.right = (uint8_t)(right != 0);
+    pr.res = (uint8_t)res;
+    pr.right = (uint8_t)(res == LN_RIGHT);
+    pr.peek = 0;
+    pr.has_j = (uint8_t)(card_key(c) && pr.an);
+    if (pr.has_j)
+        pr.j = mo_judge(pr.am, pr.ag, pr.an, mo_code(ln_char(c->ch)), pr.unit0);
     pr.ratio10 = card_key(c) ? mo_dec_ratio10(&dsrc[SRC_OWN].dec) : 0u;
-    ln_answer(&rec.ln, &pr.r, right);
+    ln_answer(&rec.ln, &pr.r, res);
     pr.ps = PS_RESULT;
     pr.answer_ok = 0;
     play_stop(&ptx);
-    if (!right)
+    if (res != LN_RIGHT)
         play_char(&ptx, ln_char(c->ch));   /* how it should have gone */
-    pr.until = plat_ms() + (right ? 900u : 1800u);
+    wait = res != LN_RIGHT ? 2800u : pr.has_j && pr.j.score < 85u ? 1800u : 900u;
+    pr.until = plat_ms() + wait;
     inputs_for_page();
     ui.redraw |= R_ALL;
+}
+
+static void practice_judge(void)         /* the keyed answer is over: judged by its own rhythm */
+{
+    const ln_card_t *c = ln_card(&pr.r);
+    uint8_t want;
+    mo_judge_t j;
+    if (!c)
+        return;
+    want = mo_code(ln_char(c->ch));
+    j = mo_judge(pr.am, pr.ag, pr.an, want, pr.unit0);
+    if (j.verdict != MJ_WRONG)
+        mo_dec_teach(&dsrc[SRC_OWN].dec, pr.am, pr.an, want);   /* the hand's speed, read right */
+    practice_answer(j.verdict == MJ_RIGHT ? LN_RIGHT : j.verdict == MJ_ALMOST ? LN_ALMOST : LN_WRONG);
 }
 
 static void practice_keyed(char c)       /* the own decoder read a character during a card */
 {
     const ln_card_t *k = ln_card(&pr.r);
+    uint32_t n = slen(pr.read);
     if (pr.ps != PS_CARD || !k || !card_key(k) || !pr.answer_ok)
         return;
+    if (n < sizeof pr.read - 1u) {
+        pr.read[n] = c;
+        pr.read[n + 1u] = 0;
+    }
     pr.got = c;
-    practice_answer(c == ln_char(k->ch));
+    if (strict())                        /* 0.3's way: what the decoder read at the send speed */
+        practice_answer(c == ln_char(k->ch) ? LN_RIGHT : LN_WRONG);
 }
 
 static void practice_choose(uint32_t i)
@@ -759,15 +894,17 @@ static void practice_choose(uint32_t i)
     if (pr.ps != PS_CARD || !c || !ln_choose(c->type) || i > 3u)
         return;
     pr.got = ln_char(c->opt[i]);
-    practice_answer(i == c->right);
+    practice_answer(i == c->right ? LN_RIGHT : LN_WRONG);
 }
 
 static void practice_leave(void)
 {
     if (pr.active) {
         pr.active = 0;
-        ln_finish(&rec.ln, &pr.r);
-        rec_save();
+        if (!pr.r.place) {
+            ln_finish(&rec.ln, &pr.r);
+            rec_save();
+        }
     }
     play_stop(&ptx);
     pr.ps = PS_START;
@@ -778,12 +915,253 @@ static void practice_step(uint32_t now)
     const ln_card_t *c = ln_card(&pr.r);
     if (pr.ps == PS_CARD && c && card_key(c) && !pr.answer_ok && !playing(&ptx)) {
         pr.answer_ok = 1;                /* the prompt has played: now keying answers */
-        own_reset();
+        hand_ready();
         inputs_for_page();
         ui.redraw |= R_FOOT | R_MAIN;
     }
-    if (pr.ps == PS_RESULT && now >= pr.until && !playing(&ptx))
+    /* the answer ends with a silence: a letter's gap once it has its marks, longer while it is short of them (a
+     * long gap inside it should not cut it) */
+    if (!strict() && capturing() && pr.an && !dsrc[SRC_OWN].down) {
+        uint32_t len = mo_len(mo_code(ln_char(c->ch))), u = pr.unit0, wait;
+        if (pr.an < len)
+            wait = 6u * u > 900u ? 6u * u : 900u;
+        else {
+            uint32_t du = 2u * mo_dec_unit(&dsrc[SRC_OWN].dec) + 20u;
+            wait = 3u * u > du ? 3u * u : du;
+        }
+        if ((int32_t)(now - pr.a_up) >= (int32_t)wait)
+            practice_judge();
+    }
+    if (pr.ps == PS_RESULT && (int32_t)(now - pr.until) >= 0 && !playing(&ptx))
         card_present();
+}
+
+/* ------------------------------------------------------- progress by hand --- */
+/* CHART's edit works on a copy; PLAY asks, and only PLAY again writes it. A placement test's finds and a backup
+ * from the computer are asked the same way */
+static ln_state_t *chart_state(void) { return pg.edit ? &pg.draft : &rec.ln; }
+
+static void chart_edit_on(void)
+{
+    pg.draft = rec.ln;
+    pg.edit = 1;
+    pg.dirty = 0;
+    pg.sel_t = 0;
+    app_say("EDIT", "PLAY SAVES");
+    ui.redraw |= R_ALL;
+}
+
+static void chart_edit_off(const char *why)
+{
+    pg.edit = 0;
+    pg.dirty = 0;
+    pg.sel_t = 0;
+    if (why)
+        app_say(why, "");
+    ui.redraw |= R_ALL;
+}
+
+static void chart_changed(const char *a, const char *b)
+{
+    pg.dirty = 1;
+    app_say(a, b);
+    ui.redraw |= R_MAIN | R_FOOT;
+}
+
+static void chart_level(int32_t d)       /* the letter under the cursor a level up or down (both its boxes) */
+{
+    ln_state_t *s = &pg.draft;
+    uint32_t i = ui.csel;
+    int32_t lv = (i < s->open ? (int32_t)ln_level(s, i) : -1) + d;
+    char a[16];
+    lv = clamp(lv, 0, (int32_t)LN_TOP);
+    ln_set_level(s, i, (uint32_t)lv);
+    a[0] = ln_char(i), a[1] = 0;
+    text_cat(a, " LEVEL ");
+    int_cat(a, lv);
+    chart_changed(a, lv ? "" : "NEW AGAIN");
+}
+
+static void chart_groups(int32_t d)      /* open a group more or less */
+{
+    char a[16];
+    ln_open_to(&pg.draft, (uint32_t)clamp((int32_t)pg.draft.open + d * (int32_t)LN_GROUP, (int32_t)LN_GROUP,
+                                          (int32_t)LN_N));
+    a[0] = 0;
+    int_cat(a, pg.draft.open);
+    text_cat(a, " OPEN");
+    chart_changed(a, d > 0 ? "NEW ONES AT THE LINE" : "REST NEW AGAIN");
+}
+
+static void chart_save_or_leave(void)    /* PLAY / REC / HOME in the edit */
+{
+    if (pg.dirty)
+        pg.ask = ASK_SAVE;
+    else
+        chart_edit_off("EDIT DONE");
+    inputs_for_page();
+    ui.redraw |= R_ALL;
+}
+
+static void prog_done(uint8_t code)      /* the answer to a backup sent to load */
+{
+    uint8_t b[1] = {code};
+    hl_send(&link, T_PROG_DONE, b, 1);
+}
+
+static void ask_yes(void)
+{
+    uint32_t n;
+    char a[24];
+    switch (pg.ask) {
+    case ASK_SAVE:
+        rec.ln = pg.draft;
+        rec_save();
+        chart_edit_off("SAVED");
+        break;
+    case ASK_LOAD:
+        if (pr.active || pr.ps != PS_START)
+            practice_leave();
+        rec.ln = pg.draft;
+        rec_save();
+        app_say("PROGRESS LOADED", "");
+        prog_done(PD_LOADED);
+        break;
+    case ASK_PLACE:
+        n = ln_place_apply(&rec.ln, &pr.r);
+        rec_save();
+        a[0] = 0;
+        int_cat(a, (int32_t)n);
+        text_cat(a, " MARKED KNOWN");
+        app_say(a, "");
+        break;
+    default:
+        break;
+    }
+    pg.ask = ASK_NONE;
+    inputs_for_page();
+    ui.redraw |= R_ALL;
+}
+
+static void ask_no(void)
+{
+    switch (pg.ask) {
+    case ASK_SAVE: chart_edit_off("NOT SAVED"); break;
+    case ASK_LOAD:
+        app_say("NOT LOADED", "");
+        prog_done(PD_DECLINED);
+        break;
+    case ASK_PLACE: app_say("NOTHING CHANGED", ""); break;
+    default: break;
+    }
+    pg.ask = ASK_NONE;
+    inputs_for_page();
+    ui.redraw |= R_ALL;
+}
+
+/* -------------------------------------------------------- progress backup --- */
+static uint16_t crc16(const uint8_t *p, uint32_t n)   /* CRC-16/CCITT-FALSE */
+{
+    uint16_t c = 0xFFFFu;
+    uint32_t k;
+    while (n--) {
+        c ^= (uint16_t)(*p++ << 8);
+        for (k = 0; k < 8u; k++)
+            c = (uint16_t)(c & 0x8000u ? (c << 1) ^ 0x1021u : c << 1);
+    }
+    return c;
+}
+
+static void prog_fill(uint8_t *b)        /* PROG_N bytes: the format, the record, the CRC */
+{
+    uint16_t c;
+    b[0] = PROG_FORMAT;
+    ln_blob(&rec.ln, b + 1);
+    c = crc16(b, 1u + LN_BLOB_N);
+    b[1u + LN_BLOB_N] = (uint8_t)c;
+    b[2u + LN_BLOB_N] = (uint8_t)(c >> 8);
+}
+
+static uint32_t pack7(const uint8_t *in, uint32_t n, uint8_t *out)   /* each 7 bytes: their high bits, then them */
+{
+    uint32_t i, j, k = 0;
+    for (i = 0; i < n; i += 7u) {
+        uint32_t m = n - i < 7u ? n - i : 7u;
+        uint8_t hi = 0;
+        for (j = 0; j < m; j++)
+            hi |= (uint8_t)((in[i + j] >> 7) << j);
+        out[k++] = hi;
+        for (j = 0; j < m; j++)
+            out[k++] = in[i + j] & 0x7Fu;
+    }
+    return k;
+}
+
+static uint32_t unpack7(const uint8_t *in, uint32_t n, uint8_t *out, uint32_t max)
+{
+    uint32_t i = 0, j, k = 0;
+    while (i < n) {
+        uint8_t hi = in[i++];
+        for (j = 0; j < 7u && i < n && k < max; j++)
+            out[k++] = (uint8_t)(in[i++] | ((hi >> j) & 1u) << 7);
+    }
+    return k;
+}
+
+static void prog_pump(void)              /* the backup out, a frame each main-loop pass while the USB takes them */
+{
+    uint8_t b[PROG_N], f[2u + PROG_CHUNK + PROG_CHUNK / 7u + 1u];
+    uint32_t off, m, k;
+    if (!prog.tx_on)
+        return;
+    prog_fill(b);
+    off = prog.tx_i * PROG_CHUNK;
+    m = PROG_N - off < PROG_CHUNK ? PROG_N - off : PROG_CHUNK;
+    f[0] = prog.tx_i;
+    f[1] = (uint8_t)PROG_FRAMES;
+    k = 2u + pack7(b + off, m, f + 2);
+    if (hl_send(&link, T_PROG, f, k) == 0 && ++prog.tx_i >= PROG_FRAMES)
+        prog.tx_on = 0;
+}
+
+static void prog_in(const uint8_t *d, uint32_t len)   /* a chunk of a backup to load */
+{
+    uint32_t i, off;
+    uint16_t c;
+    if (len < 3u || d[1] != PROG_FRAMES || d[0] >= PROG_FRAMES) {
+        prog_done(PD_BAD);
+        return;
+    }
+    if (d[0] == 0u)
+        prog.rx_next = 0;
+    if (d[0] != prog.rx_next) {          /* one missed: start again */
+        prog.rx_next = 0;
+        prog_done(PD_BAD);
+        return;
+    }
+    off = d[0] * PROG_CHUNK;
+    (void)unpack7(d + 2, len - 2u, prog.buf + off, PROG_N - off < PROG_CHUNK ? PROG_N - off : PROG_CHUNK);
+    prog.rx_next++;
+    if (prog.rx_next < PROG_FRAMES)
+        return;
+    prog.rx_next = 0;
+    c = crc16(prog.buf, 1u + LN_BLOB_N);
+    if (pg.ask && pg.ask != ASK_LOAD) {  /* another question is up: answer that first */
+        prog_done(PD_DECLINED);
+        return;
+    }
+    if (pg.edit)
+        chart_edit_off("EDIT DROPPED");
+    i = prog.buf[0] == PROG_FORMAT && prog.buf[1u + LN_BLOB_N] == (uint8_t)c
+        && prog.buf[2u + LN_BLOB_N] == (uint8_t)(c >> 8) && ln_unblob(&pg.draft, prog.buf + 1);
+    if (!i) {
+        prog_done(PD_BAD);
+        app_say("BACKUP REFUSED", "IT DOES NOT CHECK OUT");
+        return;
+    }
+    pg.ask = ASK_LOAD;
+    inputs_for_page();
+    ui.redraw |= R_ALL;
 }
 
 /* ----------------------------------------------------------------- listen --- */
@@ -1214,7 +1592,7 @@ static void page_sel(void)               /* SEL: choose, skip, switch */
     }
 }
 
-#define SET_ITEMS 11u
+#define SET_ITEMS 12u
 static void page_select(int32_t e)       /* SELECT turned */
 {
     int32_t d = e > 0 ? 1 : -1;
@@ -1226,6 +1604,12 @@ static void page_select(int32_t e)       /* SELECT turned */
     case PG_PRACTICE:
         if (pr.ps == PS_CARD && (c = ln_card(&pr.r)) != 0 && ln_choose(c->type))
             pr.pick = (uint8_t)wrap(pr.pick, d, 4u);
+        else if (pr.ps == PS_START || pr.ps == PS_DONE) {   /* a round, or a placement test */
+            pr.test = (uint8_t)!pr.test;
+            if (pr.ps == PS_DONE && pr.r.place)
+                pr.ps = PS_START;
+            ui.redraw |= R_ALL;
+        }
         break;
     case PG_LISTEN:
         SET.prog = (uint8_t)wrap(SET.prog, d, LP_N);
@@ -1365,7 +1749,8 @@ static void preset_step(int32_t d)
 
 /* the settings page: SELECT moves, OCT- / OCT+ (or SEL) change */
 static const char *const SET_NAME[SET_ITEMS] = {"PRESET", "HEAR SPEED", "SPACING", "SEND SPEED", "PITCH",    "KEYER",
-                                                "PADDLES", "SOUND",     "CARDS",   "LEARN BY",   "TYPE KEYS"};
+                                                "PADDLES", "SOUND",     "CARDS",   "LEARN BY",   "JUDGING",
+                                                "TYPE KEYS"};
 static void settings_step(int32_t d)
 {
     switch (ui.sel) {
@@ -1394,6 +1779,11 @@ static void settings_step(int32_t d)
             app_say("TIP", "SOUND FIRST IS FASTER LATER");
         break;
     case 10:
+        look_set(7, 1u, !strict());
+        look_changed();
+        app_say(strict() ? "STRICT" : "BY RHYTHM", strict() ? "AT THE SEND SPEED" : "ANY SPEED, 1:3");
+        break;
+    case 11:
         look_set(3, 3u, wrap(tlayout(), d, TL_N));
         look_changed();
         break;
@@ -1406,12 +1796,47 @@ static void input(void)
 {
     uint32_t keys = plat_keys(), btn = plat_buttons(), k;
     int32_t e;
+    if (pg.ask) {                        /* a question: PLAY yes, HOME no, nothing else */
+        for (k = 0; k < NB; k++)
+            if ((btn >> k & 1u) && !(ui.btn >> k & 1u)) {
+                if (k == B_PLAY)
+                    ask_yes();
+                else if (k == B_HOME)
+                    ask_no();
+            }
+        for (k = 0; k < NE; k++)
+            (void)plat_enc(k);
+        if (btn != ui.btn)
+            ui.redraw |= R_FOOT;
+        ui.keys = keys;
+        ui.btn = btn;
+        return;
+    }
     for (k = 0; k < NKEYS; k++)
         if ((keys >> k & 1u) && !(ui.keys >> k & 1u))
             page_key(k);
     for (k = 0; k < NB; k++) {
         if (!(btn >> k & 1u) || (ui.btn >> k & 1u))
             continue;
+        if (pg.edit && ui.page == PG_CHART) {   /* CHART's edit takes these */
+            if (k == B_HOME || k == B_REC || k == B_PLAY) {
+                chart_save_or_leave();
+                continue;
+            }
+            if (k == B_FX) {
+                ln_step_back(&pg.draft);
+                chart_changed("ONE BOX BACK", "ALL COME SOONER");
+                continue;
+            }
+            if (k == B_SEL) {
+                pg.sel_t = plat_ms() | 1u;
+                continue;
+            }
+            if (k == B_OCTDN || k == B_OCTUP) {
+                chart_level(k == B_OCTUP ? 1 : -1);
+                continue;
+            }
+        }
         switch (k) {
         case B_HOME: set_page(ui.page == PG_MENU ? ui.back : PG_MENU); break;
         case B_FX: mute_toggle(); break;
@@ -1424,13 +1849,24 @@ static void input(void)
                 look_set(2, 1u, !tlabel());
             else if (ui.page == PG_LISTEN)
                 look_set(5, 1u, !lhide());
-            else
+            else if (ui.page == PG_PRACTICE && !visual()) {   /* a peek at the code: a new letter, an answer */
+                const ln_card_t *pc = ln_card(&pr.r);
+                if ((pr.ps == PS_CARD && pc && pc->type == CARD_NEW) || (pr.ps == PS_RESULT && !pr.has_j)) {
+                    pr.peek = (uint8_t)!pr.peek;
+                    if (pr.ps == PS_RESULT)
+                        pr.until = plat_ms() + 2500u;   /* time to look */
+                    ui.redraw |= R_MAIN;
+                }
+                break;
+            } else
                 break;
             look_changed();
             break;
         case B_REC:                      /* TYPE: the last character off the line (on release; held: all of it) */
             if (ui.page == PG_TYPE)
                 ui.rec_t = plat_ms() | 1u;
+            else if (ui.page == PG_CHART)   /* CHART: edit the progress */
+                chart_edit_on();
             break;
         case B_OCTDN:
         case B_OCTUP:
@@ -1465,10 +1901,33 @@ static void input(void)
         }
     } else if (!(btn >> B_REC & 1u))
         ui.rec_t = 0;
+    if (pg.sel_t && pg.edit && ui.page == PG_CHART) {   /* SEL in the edit: hear it; held 2 s: all back to new */
+        if (!(btn >> B_SEL & 1u)) {
+            play_char(&ptx, ln_char(ui.csel));
+            pg.sel_t = 0;
+        } else if ((int32_t)(plat_ms() - pg.sel_t) >= 2000) {
+            ln_init(&pg.draft);
+            pg.sel_t = 0;
+            chart_changed("ALL RESET", "TILL SAVED");
+        }
+    } else if (!(btn >> B_SEL & 1u))
+        pg.sel_t = 0;
     if ((e = plat_enc(EN_SELECT)) != 0)
         page_select(e);
-    if ((e = plat_enc(EN_ALGO)) != 0)
-        set_page(wrap(ui.page, e > 0 ? 1 : -1, PG_N));
+    if ((e = plat_enc(EN_ALGO)) != 0) {
+        if (pg.edit && ui.page == PG_CHART)
+            app_say("EDITING", "REC: SAVE OR LEAVE");
+        else
+            set_page(wrap(ui.page, e > 0 ? 1 : -1, PG_N));
+    }
+    if (pg.edit && ui.page == PG_CHART) {   /* the edit's knobs: K1 the letter's level, K2 the groups open */
+        if ((e = plat_enc(EN_K1)) != 0)
+            chart_level(e > 0 ? 1 : -1);
+        if ((e = plat_enc(EN_K2)) != 0)
+            chart_groups(e > 0 ? 1 : -1);
+        (void)plat_enc(EN_K3);
+        (void)plat_enc(EN_K4);
+    }
     if ((e = plat_enc(EN_K1)) != 0)
         speed(e > 0 ? 1 : -1);
     if ((e = plat_enc(EN_K2)) != 0)
@@ -1565,7 +2024,8 @@ static void draw_header(uint32_t now)
         x = cv_text(8, 7, &FONT_B, ui.msg[0], C_WHITE);
         cv_text(x + 8, 9, &FONT_XS, ui.msg[1], C_RX);
     } else {
-        cv_text(8, 7, &FONT_B, PAGE[ui.page], C_WHITE);
+        cv_text(8, 7, &FONT_B, ui.page == PG_CHART && pg.edit ? (pg.dirty ? "EDIT *" : "EDIT") : PAGE[ui.page],
+                ui.page == PG_CHART && pg.edit ? C_MEH : C_WHITE);
         t[0] = 0;
         if (ui.page == PG_KEY || ui.page == PG_RHYTHM) {   /* the speed this page goes by */
             text_cat(t, "SEND ");
@@ -1865,11 +2325,114 @@ static void choices(int32_t y, const ln_card_t *c, int32_t oy)
     }
 }
 
+/* PRACTICE's result for a keyed answer: the grade, then the character as it goes (SHOULD, at the answer's own dit)
+ * over the answer as keyed (YOU), to one scale, and what to work on */
+static const char *const GRADE[4] = {"GREAT", "GOOD", "CLOSE", "OFF"};
+static uint32_t grade_of(uint32_t score) { return score >= 85u ? 0u : score >= 65u ? 1u : score >= 40u ? 2u : 3u; }
+static const char *const HINT[MH_NHINTS] = {
+    "clean rhythm",
+    "dahs short: hold a dah for 3 dits",
+    "dits long: tap a dit short",
+    "a mark too many",
+    "a mark missing, or the letter split",
+    "gaps inside long: run it together",
+    "keep marks of a kind the same length",
+    "dahs long: 3 dits is enough",
+};
+
+static void bars(const uint16_t *mark, const uint16_t *gap, uint32_t n, uint8_t want, uint32_t dit, int32_t y,
+                 uint32_t den, int you)
+{
+    int32_t x = 52;
+    uint32_t i;
+    for (i = 0; i < n; i++) {
+        int32_t w;
+        int dah = want && mo_len(want) == n ? mo_elem(want, i) : mark[i] >= 2u * dit;
+        uint16_t c = dah ? C_RX : C_OWN;
+        if (i) {
+            int32_t g = (int32_t)(gap[i] * 180u / den);
+            if (you && gap[i] * 10u >= dit * 25u)
+                cv_rect(x, y + 10, g, 2, C_BAD);   /* a gap a listener takes for a letter's end */
+            x += g;
+        }
+        w = (int32_t)(mark[i] * 180u / den);
+        if (w < 2)
+            w = 2;
+        if (x + w > 236)
+            w = 236 - x > 2 ? 236 - x : 2;
+        if (you && want && mo_len(want) == n && pr.res != LN_RIGHT) {
+            /* the marks on the wrong side of the line between this answer's dits and dahs */
+            int looks_dah = mark[i] * 10u >= dit * 20u;
+            if (looks_dah != dah)
+                c = C_BAD;
+        }
+        cv_rect(x, y + 2, w, 8, c);
+        x += w;
+    }
+}
+
+static void result_keyed(const ln_card_t *a, int32_t oy)
+{
+    char t[48];
+    uint8_t want = mo_code(ln_char(a->ch));
+    uint32_t n = mo_len(want), i, dit = pr.j.dit ? pr.j.dit : 100u, sh = 0, yo = 0, den, g = grade_of(pr.j.score);
+    uint16_t sm[8], sg[8];
+    for (i = 0; i < n && i < 8u; i++) {  /* how it goes, at this answer's speed */
+        sm[i] = (uint16_t)(mo_elem(want, i) ? 3u * dit : dit);
+        sg[i] = (uint16_t)(i ? dit : 0u);
+        sh += sm[i] + sg[i];
+    }
+    for (i = 0; i < pr.an; i++)
+        yo += pr.am[i] + pr.ag[i];
+    den = sh > yo ? sh : yo;
+    if (!den)
+        den = 1;
+    t[0] = 0;
+    text_cat(t, GRADE[g]);
+    text_cat(t, " ");
+    int_cat(t, pr.j.score);
+    cv_text(8, 62 - oy, &FONT_B, t, g == 0u ? C_OK : g == 1u ? C_OK : g == 2u ? C_MEH : C_BAD);
+    if (pr.read[0]) {
+        t[0] = 0;
+        text_cat(t, "READ AS ");
+        text_cat(t, pr.read);
+        cv_text(232 - text_w(&FONT_XS, t), 66 - oy, &FONT_XS, t, C_GRAY);
+    }
+    cv_text(4, 88 - oy, &FONT_T, "SHOULD", C_DIM);
+    bars(sm, sg, n, want, dit, 86 - oy, den, 0);
+    cv_text(4, 108 - oy, &FONT_T, "YOU", C_DIM);
+    bars(pr.am, pr.ag, pr.an, want, dit, 106 - oy, den, 1);
+    cv_text(8, 128 - oy, &FONT_XS, HINT[pr.j.hint], pr.j.hint == MH_NONE ? C_OK : C_GRAY);
+    if (pr.res == LN_ALMOST)
+        cv_text(8, 146 - oy, &FONT_XS, "close: no box moved, asked again", C_DIM);
+}
+
 static void practice_at(int32_t oy)      /* drawn twice, each half with the rows above it taken off */
 {
     char t[40];
     const ln_card_t *c = ln_card(&pr.r);
     const ln_state_t *s = &rec.ln;
+    if (pr.ps == PS_DONE && pr.r.place) {   /* a placement test over */
+        uint32_t i, k = 0;
+        text_c(120, 8 - oy, &FONT_B, "TEST DONE", C_WHITE);
+        t[0] = 0;
+        int_cat(t, (int32_t)ln_place_count(&pr.r));
+        text_cat(t, " OF ");
+        int_cat(t, pr.r.n);
+        text_cat(t, " KNOWN");
+        text_c(120, 34 - oy, &FONT_XS, t, C_GRAY);
+        t[0] = 0;
+        for (i = 0; i < LN_N && k < 12u; i++)
+            if (pr.r.known[i / 32u] >> (i % 32u) & 1u) {
+                char c2[3] = {ln_char(i), ' ', 0};
+                text_cat(t, c2);
+                k++;
+            }
+        text_c(120, 56 - oy, &FONT_B, t, C_OK);
+        text_c(120, 96 - oy, &FONT_B, "PLAY: START", C_RX);
+        text_c(120, 120 - oy, &FONT_XS, "SELECT: a round or a test", C_DIM);
+        return;
+    }
     if (pr.ps == PS_START || pr.ps == PS_DONE) {
         int32_t y = 8;
         if (pr.ps == PS_DONE) {
@@ -1917,8 +2480,26 @@ static void practice_at(int32_t oy)      /* drawn twice, each half with the rows
         text_cat(t, "STREAK ");
         int_cat(t, s->streak);
         text_c(120, y - oy, &FONT_XS, t, s->streak ? C_OK : C_DIM);
-        text_c(120, y + 40 - oy, &FONT_B, "PLAY: START", C_RX);
-        text_c(120, y + 64 - oy, &FONT_XS, visual() ? "learning by sight" : "learning by sound", C_DIM);
+        if (s->open < LN_N) {            /* what keeps the next group shut */
+            uint32_t i, k = 0;
+            t[0] = 0;
+            text_cat(t, "NEXT GROUP WAITS ON ");
+            for (i = 0; i < s->open; i++)
+                if (s->box[i][LN_REC] < 2u || s->box[i][LN_SEND] < 1u) {
+                    char c2[3] = {ln_char(i), ' ', 0};
+                    if (k++ < 8u)
+                        text_cat(t, c2);
+                }
+            if (k)
+                text_c(120, y + 18 - oy, &FONT_T, t, C_GRAY);
+        }
+        if (pr.test) {
+            text_c(120, y + 40 - oy, &FONT_B, "PLAY: TEST", C_RX);
+            text_c(120, y + 64 - oy, &FONT_XS, "the next 10 letters: skip the ones you know", C_DIM);
+        } else {
+            text_c(120, y + 40 - oy, &FONT_B, "PLAY: START", C_RX);
+            text_c(120, y + 64 - oy, &FONT_XS, visual() ? "learning by sight" : "learning by sound", C_DIM);
+        }
         return;
     }
     if (!c && pr.ps != PS_RESULT)
@@ -1931,23 +2512,25 @@ static void practice_at(int32_t oy)      /* drawn twice, each half with the rows
     if (pr.ps == PS_RESULT) {
         const ln_card_t *a = &pr.r.card[pr.r.at - 1u];
         char ch = ln_char(a->ch);
-        text_c(120, 18 - oy, &FONT_L, pr.right ? "RIGHT" : "NO", pr.right ? C_OK : C_BAD);
+        static const char *const RES[3] = {"NO", "RIGHT", "ALMOST"};
+        uint16_t rc = pr.res == LN_RIGHT ? C_OK : pr.res == LN_ALMOST ? C_MEH : C_BAD;
+        if (pr.has_j) {                  /* a keyed answer: how it went, against how it goes */
+            cv_text(8, 16 - oy, &FONT_L, RES[pr.res], rc);
+            t[0] = ch, t[1] = 0;
+            cv_text(232 - text_w(&FONT_L, t), 16 - oy, &FONT_L, t, C_WHITE);
+            result_keyed(a, oy);
+            return;
+        }
+        text_c(120, 18 - oy, &FONT_L, RES[pr.res], rc);
         t[0] = ch, t[1] = 0;
         text_c(120, 64 - oy, &FONT_L, t, C_WHITE);
-        if (visual())
+        if (visual() || pr.peek)
             draw_code(mo_code(ch), 120, 108 - oy, 8, C_GRAY);
         if (!pr.right && pr.got) {
             t[0] = 0;
             text_cat(t, "YOU: ");
             t[5] = pr.got, t[6] = 0;
             text_c(120, 126 - oy, &FONT_XS, t, C_BAD);
-        }
-        if (pr.ratio10 && card_key(a)) {
-            t[0] = 0;
-            text_cat(t, "DAH:DIT ");
-            tenths_cat(t, pr.ratio10);
-            text_cat(t, pr.ratio10 < 25u ? "  dahs short" : pr.ratio10 > 40u ? "  dahs long" : "");
-            text_c(120, 146 - oy, &FONT_XS, t, C_GRAY);
         }
         return;
     }
@@ -1960,7 +2543,7 @@ static void practice_at(int32_t oy)      /* drawn twice, each half with the rows
         switch (c->type) {
         case CARD_NEW:
             text_c(120, 50 - oy, &FONT_L, t, C_WHITE);
-            if (visual())
+            if (visual() || pr.peek)
                 draw_code(mo_code(ch), 120, 100 - oy, 8, C_GRAY);
             text_c(120, 128 - oy, &FONT_XS, SET.mute ? "watch it, then a key" : "listen, then any key", C_DIM);
             break;
@@ -2135,10 +2718,11 @@ static void chart_at(int32_t oy)         /* the course like a kana chart: 7 x 6,
     uint32_t i;
     for (i = 0; i < LN_N; i++) {
         int32_t x = 2 + (int32_t)(i % 7u) * 34, y = 2 + (int32_t)(i / 7u) * 28 - oy;
-        int open = i < rec.ln.open;
-        uint16_t bg = open ? level_rgb(ln_level(&rec.ln, i)) : RGB(20, 20, 24);
+        const ln_state_t *st = chart_state();
+        int open = i < st->open;
+        uint16_t bg = open ? level_rgb(ln_level(st, i)) : RGB(20, 20, 24);
         if (i == ui.csel)
-            cv_rect(x - 2, y - 2, 36, 30, C_WHITE);
+            cv_rect(x - 2, y - 2, 36, 30, pg.edit ? C_MEH : C_WHITE);
         cv_rect(x, y, 32, 26, bg);
         t[0] = ln_char(i);
         text_c(x + 16, y + 5, &FONT_B, t, open ? C_WHITE : C_DIM);
@@ -2152,9 +2736,9 @@ static void set_at(int32_t oy)
     char t[32];
     uint32_t i;
     for (i = 0; i < SET_ITEMS; i++) {
-        int32_t y = 1 + (int32_t)i * 16 - oy;
+        int32_t y = 1 + (int32_t)i * 14 - oy;
         if (i == ui.sel)
-            cv_rect(0, y - 1, 240, 16, C_LINE);
+            cv_rect(0, y - 1, 240, 14, C_LINE);
         cv_text(8, y, &FONT_XS, SET_NAME[i], C_GRAY);
         t[0] = 0;
         switch (i) {
@@ -2182,7 +2766,8 @@ static void set_at(int32_t oy)
         case 7: text_cat(t, SET.mute ? "OFF (LIGHTS)" : "ON"); break;
         case 8: int_cat(t, SET.cards); text_cat(t, " A ROUND"); break;
         case 9: text_cat(t, visual() ? "SIGHT" : "SOUND (BEST)"); break;
-        case 10: text_cat(t, LAYOUT[tlayout()]); break;
+        case 10: text_cat(t, strict() ? "STRICT (SEND SPEED)" : "BY RHYTHM (EASY)"); break;
+        case 11: text_cat(t, LAYOUT[tlayout()]); break;
         default: break;
         }
         cv_text(96, y, &FONT_XS, t, i == ui.sel ? C_WHITE : C_RX);
@@ -2216,8 +2801,50 @@ static void main_area(void (*fn)(int32_t oy))
     cv_blit(0, 32 + MAIN_H / 2);
 }
 
+static void ask_at(int32_t oy)           /* a question about the progress */
+{
+    static const char *const Q[4] = {"", "SAVE CHANGES?", "LOAD THIS BACKUP?", "MARK THESE KNOWN?"};
+    const ln_state_t *s = pg.ask == ASK_PLACE ? &rec.ln : &pg.draft;
+    char t[48];
+    uint32_t i, k = 0;
+    cv_rect(8, 8 - oy, 224, 150, RGB(24, 24, 30));
+    text_c(120, 18 - oy, &FONT_B, Q[pg.ask], C_WHITE);
+    t[0] = 0;
+    if (pg.ask == ASK_PLACE) {
+        for (i = 0; i < LN_N && k < 12u; i++)
+            if (pr.r.known[i / 32u] >> (i % 32u) & 1u) {
+                char c2[3] = {ln_char(i), ' ', 0};
+                text_cat(t, c2);
+                k++;
+            }
+        text_c(120, 48 - oy, &FONT_B, t, C_OK);
+        text_c(120, 74 - oy, &FONT_XS, "whole groups right open", C_GRAY);
+    } else {
+        text_cat(t, "ROUND ");
+        int_cat(t, s->round);
+        text_cat(t, "  ");
+        int_cat(t, s->open);
+        text_cat(t, " OPEN");
+        text_c(120, 48 - oy, &FONT_XS, t, C_GRAY);
+        t[0] = 0;
+        int_cat(t, (int32_t)s->answered);
+        text_cat(t, " ANSWERED, ");
+        int_cat(t, (int32_t)s->right);
+        text_cat(t, " RIGHT");
+        text_c(120, 66 - oy, &FONT_XS, t, C_GRAY);
+        text_c(120, 84 - oy, &FONT_XS, pg.ask == ASK_LOAD ? "replaces the progress here" : "the progress as edited",
+               C_DIM);
+    }
+    text_c(70, 116 - oy, &FONT_B, "PLAY: YES", C_OK);
+    text_c(176, 116 - oy, &FONT_B, "HOME: NO", C_BAD);
+}
+
 static void draw_main(void)
 {
+    if (pg.ask) {
+        main_area(ask_at);
+        return;
+    }
     switch (ui.page) {
     case PG_KEY: key_page(); break;
     case PG_TYPE: type_page(); break;
@@ -2239,7 +2866,8 @@ static void draw_footer(void)
     uint32_t i;
     cv_begin(240, 32, C_BLACK);
     cv_rect(0, 0, 240, 1, C_LINE);
-    switch (ui.page) {
+    switch (pg.ask ? PG_N : ui.page) {
+    case PG_N: s = "PLAY yes   HOME no"; break;
     case PG_MENU: s = "SELECT move  SEL open  HOME back"; break;
     case PG_KEY:
         t[0] = 0;
@@ -2254,9 +2882,13 @@ static void draw_footer(void)
     case PG_TYPE: s = "OCT-/+ page   REC del, hold: clear\nPLAY play/stop  SEL live/compose  SEQ code"; break;
     case PG_SET: s = "SELECT item  OCT- / OCT+ change"; break;
     case PG_CHART:
+        if (pg.edit) {
+            s = "OCT-/+ K1 level  K2 groups  FX all back\nPLAY/REC save  SEL hear, hold: reset all";
+            break;
+        }
         t[0] = 0;
-        text_cat(t, "PLAY hear ");
-        t[10] = ln_char(ui.csel), t[11] = 0;
+        text_cat(t, "REC edit  PLAY hear ");
+        t[20] = ln_char(ui.csel), t[21] = 0;
         if (visual()) {
             char p[8];
             mo_pattern(mo_code(ln_char(ui.csel)), p);
@@ -2267,12 +2899,14 @@ static void draw_footer(void)
         break;
     case PG_PRACTICE:
         if (pr.ps == PS_CARD && c)
-            s = ln_choose(c->type) ? "keys E4-A4, or SELECT + SEL" : card_key(c) ? "PLAY again  SEL don't know"
-                                                                                : "any key: next";
+            s = ln_choose(c->type) ? "keys E4-A4, or SELECT + SEL"
+                : card_key(c)      ? "PLAY again  SEL don't know"
+                : visual()         ? "PLAY again  a key: next"
+                                   : "PLAY again  SEQ the code  a key: next";
         else if (pr.ps == PS_RESULT)
-            s = "any key: next";
+            s = visual() || pr.has_j ? "a key: next" : "a key: next  SEQ the code";
         else
-            s = "PLAY start  HOME menu  FX mute";
+            s = "PLAY start  SELECT round/test  FX mute";
         break;
     default: break;
     }
@@ -2392,6 +3026,7 @@ void app_frame(void)
     if (ui.page == PG_LISTEN)
         listen_step();
     hl_tick(&link, now, T_HELLO, T_HEARTBEAT, HELLO, 3);
+    prog_pump();
     host = (uint8_t)hl_host(&link, now);
     if (host != ui.host_was) {
         ui.host_was = host;
@@ -2509,6 +3144,36 @@ int app_expect(const char *what, int *got)
         *got = SET.prog;
     else if (!strcmp(what, "lhide"))
         *got = (int)lhide();
+    else if (!strcmp(what, "res"))
+        *got = pr.res;
+    else if (!strcmp(what, "score"))
+        *got = pr.has_j ? pr.j.score : -1;
+    else if (!strcmp(what, "hint"))
+        *got = pr.has_j ? pr.j.hint : -1;
+    else if (!strcmp(what, "marks"))
+        *got = pr.an;
+    else if (!strcmp(what, "answer_ok"))
+        *got = pr.answer_ok;
+    else if (!strcmp(what, "test"))
+        *got = pr.test;
+    else if (!strcmp(what, "ask"))
+        *got = pg.ask;
+    else if (!strcmp(what, "edit"))
+        *got = pg.edit;
+    else if (!strcmp(what, "dirty"))
+        *got = pg.dirty;
+    else if (!strcmp(what, "csel"))
+        *got = ui.csel;
+    else if (!strcmp(what, "lv"))            /* the level of the letter under CHART's cursor, as shown */
+        *got = ui.csel < chart_state()->open ? (int)ln_level(chart_state(), ui.csel) : -1;
+    else if (!strcmp(what, "shown_open"))    /* the groups CHART shows (the copy, editing) */
+        *got = chart_state()->open;
+    else if (!strcmp(what, "strict"))
+        *got = (int)strict();
+    else if (!strcmp(what, "peek"))
+        *got = pr.peek;
+    else if (!strcmp(what, "near"))
+        *got = pr.r.near;
     else
         return 0;
     return 1;
@@ -2547,6 +3212,26 @@ int app_host_cmd(const char *cmd, const char *a, const char *b, const char *c, c
             host_fails++;
         } else
             printf("  ok text %s \"%s\"\n", a, t);
+        return 1;
+    }
+    if (!strcmp(cmd, "setcard")) {       /* setcard hear_key|see_key CHAR: the card asked now becomes this one */
+        ln_card_t *k = pr.ps == PS_CARD && pr.r.at < pr.r.n ? &pr.r.card[pr.r.at] : 0;
+        int i = ln_index(b[0]);
+        if (!k || i < 0) {
+            printf("  FAIL setcard: no card, or not a letter of the course\n");
+            host_fails++;
+            return 1;
+        }
+        k->ch = (uint8_t)i;
+        k->type = !strcmp(a, "see_key") ? CARD_SEE_KEY : CARD_HEAR_KEY;
+        k->dir = k->type == CARD_SEE_KEY ? LN_SEND : LN_REC;
+        k->ch = (uint8_t)ln_index(b[0]);
+        play_stop(&ptx);
+        card_present();
+        return 1;
+    }
+    if (!strcmp(cmd, "setstrict")) {     /* setstrict 0|1: JUDGING */
+        look_set(7, 1u, a[0] == '1');
         return 1;
     }
     if (!strcmp(cmd, "clear_text")) {

@@ -53,6 +53,9 @@ typedef struct {
     ln_card_t card[LN_CARDS_MAX];
     uint8_t n, at;                       /* cards in the round, the one asked now */
     uint8_t ok, miss, up, fresh;         /* this round: right, wrong, moved up a box, new characters */
+    uint8_t near;                        /* answers almost right (no box moved, asked again) */
+    uint8_t place;                       /* a placement test (LN_PLACE): answers change nothing until applied */
+    uint32_t known[2];                   /* placement: the characters answered right (bit i of index i) */
     uint32_t rng;
 } ln_round_t;
 
@@ -65,14 +68,33 @@ uint32_t ln_due_count(const ln_state_t *s);
 uint32_t ln_new_count(const ln_state_t *s);   /* open characters not seen yet */
 #define LN_MUTED 1u                      /* ln_build's flags: no card that needs sound */
 #define LN_VISUAL 2u                     /* learning by sight: drawn codes allowed */
+#define LN_PLACE 4u                      /* a placement test: each character of the next two groups once, to pick */
+#define LN_PLACE_N (2u * LN_GROUP)
 int ln_choose(int type);                 /* a card answered by picking one of four */
 /* a round of n cards (n <= LN_CARDS_MAX / 2: room for the ones asked again) */
 void ln_build(const ln_state_t *s, ln_round_t *r, uint32_t n, uint32_t flags, uint32_t seed);
 const ln_card_t *ln_card(const ln_round_t *r);   /* the card asked now, 0 when the round is over */
 /* the answer to the card asked now (ignored for CARD_NEW, which only marks the character seen): returns 1 if it
- * moved up a box */
-int ln_answer(ln_state_t *s, ln_round_t *r, int right);
+ * moved up a box. LN_ALMOST: no box moves, the card is asked again at the end */
+enum { LN_WRONG, LN_RIGHT, LN_ALMOST };
+int ln_answer(ln_state_t *s, ln_round_t *r, int result);
 /* the round is over (or left): counted, the streak, and the next group opened when the open ones are learnt.
  * Returns 1 when a group opened */
 int ln_finish(ln_state_t *s, const ln_round_t *r);
 uint32_t ln_level(const ln_state_t *s, uint32_t i);   /* 0..5 for the chart: its two boxes' average, rounded down */
+
+/* changes by hand (the chart's edit, a placement test, a loaded backup); each leaves ln_valid true */
+void ln_set_level(ln_state_t *s, uint32_t i, uint32_t lv);   /* both boxes to lv; opens up to its group if closed */
+void ln_mark_known(ln_state_t *s, uint32_t i);   /* recognise box 3, send box 2 */
+void ln_open_to(ln_state_t *s, uint32_t n);      /* n characters open (rounded up to a group); the newly opened set
+                                                  * just at the next group's line, the closed ones back to new */
+void ln_step_back(ln_state_t *s);                /* every box one down: all come back sooner */
+uint32_t ln_place_count(const ln_round_t *r);    /* placement: characters answered right */
+/* placement over: those answered right marked known, and each group answered all right in turn opened. Returns how
+ * many were marked */
+uint32_t ln_place_apply(ln_state_t *s, const ln_round_t *r);
+/* the record as bytes for a backup (LN_BLOB_N, little-endian, no padding) and back; ln_unblob returns 1 when it
+ * makes sense */
+#define LN_BLOB_N (2u + 2u + 1u + 4u + 4u + LN_N * LN_NDIR + LN_N * LN_NDIR * 2u)
+void ln_blob(const ln_state_t *s, uint8_t *b);
+int ln_unblob(ln_state_t *s, const uint8_t *b);

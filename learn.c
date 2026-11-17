@@ -106,7 +106,8 @@ static uint32_t ln_alike(uint32_t a, uint32_t b)   /* how alike two characters' 
 
 static void ln_options(const ln_state_t *s, ln_round_t *r, ln_card_t *c)
 {
-    uint32_t pool = s->open < 4u ? 4u : s->open, score[LN_N], i, k, pick[3];
+    uint32_t top = r->place ? (s->open + LN_PLACE_N > LN_N ? LN_N : s->open + LN_PLACE_N) : s->open;
+    uint32_t pool = top < 4u ? 4u : top, score[LN_N], i, k, pick[3];
     for (i = 0; i < pool; i++)
         score[i] = i == c->ch ? 0u : 1u + ln_alike(c->ch, i) * 4u + ln_rand(&r->rng) % 6u;
     for (k = 0; k < 3u; k++) {
@@ -143,8 +144,29 @@ void ln_build(const ln_state_t *s, ln_round_t *r, uint32_t n, uint32_t flags, ui
     uint8_t qch[LN_N * LN_NDIR], qdir[LN_N * LN_NDIR], used[LN_N][LN_NDIR];
     uint32_t key[LN_N * LN_NDIR];
     uint32_t nq = 0, i, d, j, fresh = 0, first;
-    r->n = r->at = r->ok = r->miss = r->up = r->fresh = 0;
+    r->n = r->at = r->ok = r->miss = r->up = r->fresh = r->near = 0;
+    r->place = (uint8_t)((flags & LN_PLACE) != 0u);
+    r->known[0] = r->known[1] = 0;
     r->rng = seed ? seed : 0x9E3779B9u;
+    if (r->place) {                      /* the next two groups, each once, shuffled; recognising, at full skill */
+        uint32_t top = s->open + LN_PLACE_N > LN_N ? LN_N : s->open + LN_PLACE_N;
+        for (i = s->open; i < top; i++)
+            qch[nq++] = (uint8_t)i;
+        for (i = nq; i > 1u; i--) {
+            uint32_t k = ln_rand(&r->rng) % i;
+            uint8_t c = qch[i - 1u];
+            qch[i - 1u] = qch[k], qch[k] = c;
+        }
+        for (i = 0; i < nq; i++) {
+            ln_card_t *c;
+            ln_add(s, r, qch[i], LN_REC, flags);
+            c = &r->card[r->n - 1u];
+            c->type = ln_type(LN_REC, 2u, flags);
+            if (ln_choose(c->type))
+                ln_options(s, r, c);
+        }
+        return;
+    }
     if (n > LN_CARDS_MAX / 2u)
         n = LN_CARDS_MAX / 2u;
     if (n < 4u)
@@ -202,14 +224,23 @@ void ln_build(const ln_state_t *s, ln_round_t *r, uint32_t n, uint32_t flags, ui
 
 const ln_card_t *ln_card(const ln_round_t *r) { return r->at < r->n ? &r->card[r->at] : 0; }
 
-int ln_answer(ln_state_t *s, ln_round_t *r, int right)
+int ln_answer(ln_state_t *s, ln_round_t *r, int result)
 {
     ln_card_t *c;
     uint8_t *box;
-    int up = 0;
+    int up = 0, right = result == LN_RIGHT;
     if (r->at >= r->n)
         return 0;
     c = &r->card[r->at];
+    if (r->place) {                      /* nothing changes until ln_place_apply */
+        if (right) {
+            r->ok++;
+            r->known[c->ch / 32u] |= 1u << (c->ch % 32u);
+        } else
+            r->miss++;
+        r->at++;
+        return 0;
+    }
     if (c->type == CARD_NEW) {
         r->fresh++;
         r->at++;
@@ -224,6 +255,13 @@ int ln_answer(ln_state_t *s, ln_round_t *r, int right)
             (*box)++;
             r->up++;
             up = 1;
+        }
+    } else if (result == LN_ALMOST) {    /* close: the box stays, asked once more */
+        r->near++;
+        if (!c->again && r->n < LN_CARDS_MAX) {
+            ln_card_t *a = &r->card[r->n++];
+            *a = *c;
+            a->again = 1;
         }
     } else {
         r->miss++;
@@ -243,8 +281,8 @@ int ln_answer(ln_state_t *s, ln_round_t *r, int right)
 
 int ln_finish(ln_state_t *s, const ln_round_t *r)
 {
-    uint32_t i, asked = r->ok + r->miss;
-    if (!asked)
+    uint32_t i, asked = r->ok + r->miss + r->near;
+    if (!asked || r->place)
         return 0;
     s->round++;
     if (r->at >= r->n)                   /* a whole round: the streak; one left halfway does not change it */
@@ -263,4 +301,165 @@ uint32_t ln_level(const ln_state_t *s, uint32_t i)
     if (i >= LN_N)
         return 0;
     return (s->box[i][LN_REC] + s->box[i][LN_SEND]) / 2u;
+}
+
+/* ----------------------------------------------------------- by hand --- */
+static void ln_seen(ln_state_t *s, uint32_t i)   /* answered now, as far as the schedule goes */
+{
+    s->last[i][LN_REC] = s->last[i][LN_SEND] = s->round;
+}
+
+static void ln_open_raw(ln_state_t *s, uint32_t n)   /* more open: the new ones at the line the next group needs */
+{
+    uint32_t i;
+    n = (n + LN_GROUP - 1u) / LN_GROUP * LN_GROUP;
+    n = n < LN_GROUP ? LN_GROUP : n > LN_N ? LN_N : n;
+    for (i = s->open; i < n; i++) {
+        if (s->box[i][LN_REC] < 2u)
+            s->box[i][LN_REC] = 2u;
+        if (s->box[i][LN_SEND] < 1u)
+            s->box[i][LN_SEND] = 1u;
+        ln_seen(s, i);
+    }
+    if (n > s->open)
+        s->open = (uint8_t)n;
+}
+
+void ln_set_level(ln_state_t *s, uint32_t i, uint32_t lv)
+{
+    if (i >= LN_N)
+        return;
+    if (lv > LN_TOP)
+        lv = LN_TOP;
+    if (i >= s->open)
+        ln_open_raw(s, i + 1u);
+    s->box[i][LN_REC] = s->box[i][LN_SEND] = (uint8_t)lv;
+    if (lv == 0u) {                      /* back to new: shown again, then asked */
+        s->last[i][LN_REC] = s->last[i][LN_SEND] = LN_NEVER;
+    } else
+        ln_seen(s, i);
+}
+
+void ln_mark_known(ln_state_t *s, uint32_t i)
+{
+    if (i >= LN_N)
+        return;
+    if (i >= s->open)
+        ln_open_raw(s, i + 1u);
+    if (s->box[i][LN_REC] < 3u)
+        s->box[i][LN_REC] = 3u;
+    if (s->box[i][LN_SEND] < 2u)
+        s->box[i][LN_SEND] = 2u;
+    ln_seen(s, i);
+}
+
+void ln_open_to(ln_state_t *s, uint32_t n)
+{
+    uint32_t i;
+    n = (n + LN_GROUP - 1u) / LN_GROUP * LN_GROUP;
+    n = n < LN_GROUP ? LN_GROUP : n > LN_N ? LN_N : n;
+    if (n >= s->open) {
+        ln_open_raw(s, n);
+        return;
+    }
+    for (i = n; i < s->open; i++) {
+        s->box[i][LN_REC] = s->box[i][LN_SEND] = 0;
+        s->last[i][LN_REC] = s->last[i][LN_SEND] = LN_NEVER;
+    }
+    s->open = (uint8_t)n;
+}
+
+void ln_step_back(ln_state_t *s)
+{
+    uint32_t i, d;
+    for (i = 0; i < LN_N; i++)
+        for (d = 0; d < LN_NDIR; d++)
+            if (s->box[i][d])
+                s->box[i][d]--;
+}
+
+uint32_t ln_place_count(const ln_round_t *r)
+{
+    uint32_t i, n = 0;
+    for (i = 0; i < LN_N; i++)
+        n += r->known[i / 32u] >> (i % 32u) & 1u;
+    return n;
+}
+
+uint32_t ln_place_apply(ln_state_t *s, const ln_round_t *r)
+{
+    uint32_t i, g, n = 0, open = s->open;
+    if (!r->place)
+        return 0;
+    for (g = open; g < LN_N; g += LN_GROUP) {   /* whole groups right, in turn: opened */
+        uint32_t end = g + LN_GROUP > LN_N ? LN_N : g + LN_GROUP, all = 1;
+        for (i = g; i < end; i++)
+            all &= r->known[i / 32u] >> (i % 32u) & 1u;
+        if (!all)
+            break;
+        ln_open_raw(s, end);
+    }
+    for (i = 0; i < LN_N; i++)
+        if (r->known[i / 32u] >> (i % 32u) & 1u) {
+            if (i < s->open) {
+                ln_mark_known(s, i);
+                n++;
+            }
+        }
+    return n;
+}
+
+/* ------------------------------------------------------------ a backup --- */
+static uint8_t *ln_put(uint8_t *b, uint32_t v, uint32_t n)
+{
+    uint32_t k;
+    for (k = 0; k < n; k++)
+        *b++ = (uint8_t)(v >> (8u * k));
+    return b;
+}
+
+static uint32_t ln_get(const uint8_t **b, uint32_t n)
+{
+    uint32_t v = 0, k;
+    for (k = 0; k < n; k++)
+        v |= (uint32_t)(*(*b)++) << (8u * k);
+    return v;
+}
+
+void ln_blob(const ln_state_t *s, uint8_t *b)
+{
+    uint32_t i, d;
+    b = ln_put(b, s->round, 2);
+    b = ln_put(b, s->streak, 2);
+    b = ln_put(b, s->open, 1);
+    b = ln_put(b, s->answered, 4);
+    b = ln_put(b, s->right, 4);
+    for (i = 0; i < LN_N; i++)
+        for (d = 0; d < LN_NDIR; d++)
+            *b++ = s->box[i][d];
+    for (i = 0; i < LN_N; i++)
+        for (d = 0; d < LN_NDIR; d++)
+            b = ln_put(b, s->last[i][d], 2);
+}
+
+int ln_unblob(ln_state_t *s, const uint8_t *b)
+{
+    ln_state_t t;
+    uint32_t i, d;
+    t.round = (uint16_t)ln_get(&b, 2);
+    t.streak = (uint16_t)ln_get(&b, 2);
+    t.open = (uint8_t)ln_get(&b, 1);
+    t.rsv = 0;
+    t.answered = ln_get(&b, 4);
+    t.right = ln_get(&b, 4);
+    for (i = 0; i < LN_N; i++)
+        for (d = 0; d < LN_NDIR; d++)
+            t.box[i][d] = *b++;
+    for (i = 0; i < LN_N; i++)
+        for (d = 0; d < LN_NDIR; d++)
+            t.last[i][d] = (uint16_t)ln_get(&b, 2);
+    if (!ln_valid(&t))
+        return 0;
+    *s = t;
+    return 1;
 }

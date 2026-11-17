@@ -400,3 +400,157 @@ uint32_t mo_dec_ratio10(const mo_dec_t *d)
     dah = d->dah_sum / d->dahs;
     return dit ? (dah * 10u + dit / 2u) / dit : 0;
 }
+
+void mo_dec_restart(mo_dec_t *d)
+{
+    d->pat = 1;
+    d->word = 0;
+    d->last_pat = 0;
+    d->prev = 0;
+    mo_dec_reset_stats(d);
+}
+
+void mo_dec_teach(mo_dec_t *d, const uint16_t *mark, uint32_t n, uint8_t want)
+{
+    uint32_t i, ds = 0, dn = 0, hs = 0, hn = 0;
+    if (!want || mo_len(want) != n)
+        return;
+    for (i = 0; i < n; i++)
+        if (mo_elem(want, i))
+            hs += mark[i], hn++;
+        else
+            ds += mark[i], dn++;
+    if (dn)
+        d->dit_avg = (d->dit_avg + ds / dn) / 2u;
+    else
+        d->dit_avg = (d->dit_avg + hs / hn / 3u) / 2u;
+    if (hn)
+        d->dah_avg = (d->dah_avg + hs / hn) / 2u;
+    else
+        d->dah_avg = (d->dah_avg + 3u * ds / dn) / 2u;
+    if (d->dit_avg < 10u)
+        d->dit_avg = 10u;
+    if (d->dah_avg < 2u * d->dit_avg)
+        d->dah_avg = 2u * d->dit_avg;
+}
+
+/* ------------------------------------------------------------------- judge --- */
+static uint32_t mo_dev(uint32_t got, uint32_t want)   /* how far got is off want, in % (at most 100) */
+{
+    uint32_t d, p;
+    if (!want)
+        return 100u;
+    d = got > want ? got - want : want - got;
+    p = d * 100u / want;
+    return p > 100u ? 100u : p;
+}
+
+static uint32_t mo_spread(uint32_t lo, uint32_t hi, uint32_t sum, uint32_t n)   /* marks of one kind: max - min, % */
+{
+    uint32_t avg = n ? sum / n : 0u;
+    if (n < 2u || !avg)
+        return 0;
+    return (hi - lo) * 100u / avg > 100u ? 100u : (hi - lo) * 100u / avg;
+}
+
+mo_judge_t mo_judge(const uint16_t *mark, const uint16_t *gap, uint32_t n, uint8_t want, uint32_t dit_est)
+{
+    mo_judge_t j = {MJ_WRONG, MH_NONE, 0, 0};
+    uint32_t len = mo_len(want), i, dmin = 0xFFFFFFFFu, dmax = 0, hmin = 0xFFFFFFFFu, hmax = 0;
+    uint32_t ds = 0, dn = 0, hs = 0, hn = 0, gs = 0, gn = 0, gmax = 0, dit, q = 0, dev_r, dev_g = 0, sp, sd, sh;
+    int32_t score;
+    if (dit_est < 10u)
+        dit_est = 10u;
+    j.dit = (uint16_t)dit_est;
+    if (!want || !n) {
+        j.hint = MH_MISSING;
+        return j;
+    }
+    if (n != len) {
+        j.hint = n > len ? MH_EXTRA : MH_MISSING;
+        return j;
+    }
+    for (i = 0; i < n; i++) {
+        uint32_t m = mark[i];
+        if (mo_elem(want, i)) {
+            hs += m, hn++;
+            hmin = m < hmin ? m : hmin;
+            hmax = m > hmax ? m : hmax;
+        } else {
+            ds += m, dn++;
+            dmin = m < dmin ? m : dmin;
+            dmax = m > dmax ? m : dmax;
+        }
+        if (i) {
+            gs += gap[i], gn++;
+            gmax = gap[i] > gmax ? gap[i] : gmax;
+        }
+    }
+    dit = dn ? ds / dn : hs / hn / 3u;
+    if (!dit)
+        dit = 1;
+    j.dit = (uint16_t)(dit > 0xFFFFu ? 0xFFFFu : dit);
+    if (dn && hn) {                      /* its own contrast says which is which */
+        q = (hs / hn) * 10u / (ds / dn ? ds / dn : 1u);
+        dev_r = mo_dev(q, 30u);
+        if (hmin * 10u >= dmax * 15u)
+            j.verdict = MJ_RIGHT;
+        else {
+            j.verdict = hmin * 10u >= dmax * 12u ? MJ_ALMOST : MJ_WRONG;
+            /* a dit well over the other dits is the odd one; else a dah came out short */
+            j.hint = dn >= 2u && dmax * 10u >= dmin * 15u ? MH_DIT_LONG : MH_DAH_SHORT;
+        }
+    } else if (hn) {                     /* dahs only: against this hand's dit */
+        dev_r = mo_dev(hs / hn, 3u * dit_est) / 2u;
+        if (hmax >= 2u * hmin) {         /* a dit and a dah inside it after all */
+            j.verdict = MJ_WRONG;
+            j.hint = MH_DAH_SHORT;
+        } else if (hmin * 10u >= dit_est * 16u)
+            j.verdict = MJ_RIGHT;
+        else {
+            j.verdict = hmin * 10u >= dit_est * 13u ? MJ_ALMOST : MJ_WRONG;
+            j.hint = MH_DAH_SHORT;
+        }
+    } else {                             /* dits only */
+        dev_r = mo_dev(ds / dn, dit_est) / 2u;
+        if (dmax >= 2u * dmin) {
+            j.verdict = MJ_WRONG;
+            j.hint = MH_DIT_LONG;
+        } else if (dmax * 10u <= dit_est * 24u)
+            j.verdict = MJ_RIGHT;
+        else {
+            j.verdict = dmax * 10u <= dit_est * 30u ? MJ_ALMOST : MJ_WRONG;
+            j.hint = MH_DIT_LONG;
+        }
+    }
+    if (gn)
+        dev_g = mo_dev(gs / gn, dit);
+    sd = mo_spread(dmin, dmax, ds, dn);
+    sh = mo_spread(hmin, hmax, hs, hn);
+    sp = sd > sh ? sd : sh;
+    score = 100 - (int32_t)(dev_r * 3u / 2u) - (int32_t)(dev_g / 3u) - (int32_t)(sp / 3u);
+    if (gn && gmax * 10u >= dit * 25u) { /* a gap inside it near a letter's: it would split for a listener */
+        if (j.verdict == MJ_RIGHT)
+            j.verdict = MJ_ALMOST;
+        if (j.hint == MH_NONE || j.verdict == MJ_ALMOST)
+            j.hint = MH_GAP_LONG;
+    }
+    if (j.verdict == MJ_WRONG && score > 40)
+        score = 40;
+    j.score = (uint8_t)(score < 0 ? 0 : score > 100 ? 100 : score);
+    if (j.hint == MH_NONE && j.score < 85u) {   /* right: what costs the most */
+        uint32_t cr = dev_r * 3u / 2u, cg = dev_g / 3u, cs = sp / 3u;
+        if (cr >= cg && cr >= cs && cr >= 8u) {
+            if (dn && hn)
+                j.hint = q < 30u ? MH_DAH_SHORT : MH_DAH_LONG;
+            else if (hn)                 /* dahs only: against the hand's dit */
+                j.hint = hs / hn < 3u * dit_est ? MH_DAH_SHORT : MH_DAH_LONG;
+            else
+                j.hint = ds / dn > dit_est ? MH_DIT_LONG : MH_NONE;
+        } else if (cg >= cs && cg >= 8u && gn && gs / gn > dit)
+            j.hint = MH_GAP_LONG;
+        else if (cs >= 8u)
+            j.hint = MH_UNEVEN;
+    }
+    return j;
+}

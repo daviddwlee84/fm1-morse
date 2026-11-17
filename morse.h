@@ -95,3 +95,32 @@ uint32_t mo_dec_ratio10(const mo_dec_t *d);
 uint32_t mo_dec_gap10(const mo_dec_t *d);
 int mo_dec_is_dah(const mo_dec_t *d, uint32_t ms);   /* how it would read a mark of ms now */
 void mo_dec_reset_stats(mo_dec_t *d);
+/* the averages kept (a hand's speed carried on to the next answer), the character so far and the counts dropped */
+void mo_dec_restart(mo_dec_t *d);
+/* a keyed answer known to be the character `want`: the averages moved to the marks it says are dits and dahs */
+void mo_dec_teach(mo_dec_t *d, const uint16_t *mark, uint32_t n, uint8_t want);
+
+/* ------------------------------------------------------------------- judge --- */
+/* a keyed answer against the character asked for, by its own rhythm, not a speed: marks (ms) and the gaps before
+ * them (gap[0] unused), and a dit expected of this hand (for characters of one kind of element, E T I M S O H 5 0,
+ * where nothing inside the answer says which is which). A character with dits and dahs is right when its shortest
+ * dah is at least 1.5 times its longest dit, whatever the speed. */
+enum { MJ_RIGHT, MJ_ALMOST, MJ_WRONG };  /* almost: one mark on the wrong side of the line, but close to it */
+enum {
+    MH_NONE,
+    MH_DAH_SHORT,                        /* a dah too close to a dit */
+    MH_DIT_LONG,                         /* a dit too close to a dah */
+    MH_EXTRA,                            /* more marks than the character has */
+    MH_MISSING,                          /* fewer */
+    MH_GAP_LONG,                         /* gaps inside it long (towards a letter's end) */
+    MH_UNEVEN,                           /* marks of one kind of different lengths */
+    MH_DAH_LONG,                         /* dahs well over three dits (right, but slow to read) */
+    MH_NHINTS
+};
+typedef struct {
+    uint8_t verdict;                     /* MJ_* */
+    uint8_t hint;                        /* MH_*: what to work on (MH_NONE: nothing stands out) */
+    uint8_t score;                       /* 0..100, how close the rhythm is to the textbook 1:3, gaps of one dit */
+    uint16_t dit;                        /* the dit this answer was keyed at, ms (its dits, or its dahs / 3) */
+} mo_judge_t;
+mo_judge_t mo_judge(const uint16_t *mark, const uint16_t *gap, uint32_t n, uint8_t want, uint32_t dit_est);

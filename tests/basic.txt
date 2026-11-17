@@ -14,15 +14,23 @@ expect mute 0
 expect learn 0
 expect store_writes 0
 
-# ---- the host: HELLO once a second until it answers (version 1, firmware 0.3, transport USB) ("hello")
+# ---- the host: HELLO once a second until it answers (version 1, firmware 0.4, transport USB) ("hello")
 sysex_out
 wait 1100
-expect_sysex F0 7D 4D 4F 01 41 01 00 03 00 F7
+expect_sysex F0 7D 4D 4F 01 41 01 00 04 00 F7
 expect host 0
 # HELLO_ACK ("hello_ack")
 sysex F0 7D 4D 4F 01 01 01 F7
 wait 30
 expect host 1
+
+# ---- the progress out, firmware 0.4 ("prog_req"): a fresh record in six chunks ("prog_fresh_0", "prog_fresh_5",
+# host/morse/progress.py VECTORS); nothing changes on the FM-1
+sysex F0 7D 4D 4F 01 04 F7
+wait 300
+expect_sysex F0 7D 4D 4F 01 44 00 06 00 01 00 00 00 00 05 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 F7
+expect_sysex F0 7D 4D 4F 01 44 05 06 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 05 7F 51 16 F7
+expect store_writes 0
 
 # ---- the menu: HOME, SELECT to KEY, SEL
 tap HOME
@@ -304,6 +312,8 @@ wait 20
 expect_out USB 90 00 7F
 expect_sysex F0 7D 4D 4F 01 43 41 F7
 tapkey b0
+wait 400
+shot type.png
 tap OCT+
 wait 30
 expect tpage 1
@@ -379,7 +389,7 @@ turn SELECT 2
 tap SEL
 wait 30
 expect page 7
-turn SELECT 10
+turn SELECT 11
 tap OCT+
 wait 30
 expect tlayout 1
@@ -441,7 +451,14 @@ wait 30
 expect ps 1
 expect type 0
 shot card_new.png
+# SEQ peeks at the code (learning by sound: hidden unless asked, hidden again on the next card)
+tap SEQ
+wait 30
+expect peek 1
+shot card_new_peek.png
 answer right
+wait 30
+expect peek 0
 wait 50
 answer right
 wait 50
@@ -576,3 +593,244 @@ expect miss 0
 expect streak 3
 shot done_keyed.png
 expect store_writes <20
+
+# ---- 0.4: a keyed answer judged by its own rhythm, not the send speed (SEND 10: 0.3 needed 240 ms for a dah).
+# A hand copying 20 WPM keys M as two 180 ms dahs
+tap PLAY
+wait 100
+expect ps 1
+setcard see_key M
+wait 100
+expect answer_ok 1
+shot card_see_key.png
+key 0 down
+wait 180
+key 0 up
+wait 60
+key 0 down
+wait 180
+key 0 up
+wait 500
+expect res 1
+expect marks 2
+shot result_keyed.png
+tap SEL
+wait 100
+setcard see_key T
+wait 100
+key 0 down
+wait 180
+key 0 up
+wait 500
+expect res 1
+tap SEL
+wait 100
+# heard, keyed back: E at the hand's speed
+setcard hear_key E
+wait 100
+shot card_hear_key.png
+wait 900
+expect answer_ok 1
+key 0 down
+wait 90
+key 0 up
+wait 500
+expect res 1
+tap SEL
+wait 100
+# A with its dah no longer than its dit: wrong, the dah marked red against how it goes
+setcard see_key A
+wait 100
+key 0 down
+wait 150
+key 0 up
+wait 100
+key 0 down
+wait 150
+key 0 up
+wait 700
+expect res 0
+expect hint 1
+shot result_keyed_wrong.png
+wait 3200
+# A with the dah a little long: almost, no box moved, asked again
+setcard see_key A
+wait 100
+key 0 down
+wait 150
+key 0 up
+wait 100
+key 0 down
+wait 190
+key 0 up
+wait 700
+expect res 2
+expect near 1
+shot result_almost.png
+wait 3200
+# K keyed as D (-..): wrong, however loose the line
+setcard see_key K
+wait 100
+key 0 down
+wait 300
+key 0 up
+wait 100
+key 0 down
+wait 100
+key 0 up
+wait 100
+key 0 down
+wait 100
+key 0 up
+wait 700
+expect res 0
+wait 3200
+# JUDGING STRICT: 0.3's way, the decoder at the send speed reads 180 ms as dits (I)
+setstrict 1
+setcard see_key M
+wait 100
+key 0 down
+wait 180
+key 0 up
+wait 60
+key 0 down
+wait 180
+key 0 up
+wait 700
+expect res 0
+expect strict 1
+wait 3200
+setstrict 0
+expect strict 0
+# the start page: SELECT picks a round or a placement test
+tap HOME
+wait 30
+expect page 0
+turn SELECT 5
+tap SEL
+wait 30
+expect page 6
+
+# ---- CHART's edit: a copy, saved only with PLAY twice
+tap REC
+wait 30
+expect edit 1
+turn K2 1
+wait 30
+expect shown_open 15
+expect open 10
+expect dirty 1
+expect wpm 20
+shot chart_edit.png
+tap HOME
+wait 30
+expect ask 1
+shot chart_save.png
+# keys and knobs do nothing while it asks
+turn K2 1
+tap SEL
+wait 30
+expect ask 1
+expect shown_open 15
+# HOME: no
+tap HOME
+wait 30
+expect ask 0
+expect edit 0
+expect open 10
+expect shown_open 10
+# again, and PLAY twice
+tap REC
+wait 30
+turn K2 1
+tap OCT+
+wait 30
+expect shown_open 15
+tap PLAY
+wait 30
+expect ask 1
+tap PLAY
+wait 30
+expect ask 0
+expect edit 0
+expect open 15
+# held SEL: all back to new, still only a copy
+tap REC
+wait 30
+press SEL
+wait 2100
+release SEL
+wait 30
+expect shown_open 5
+expect dirty 1
+tap REC
+wait 30
+expect ask 1
+tap HOME
+wait 30
+expect open 15
+
+# ---- a placement test: the ten letters after the open ones, once each; what you knew marked only if you say so
+tap HOME
+wait 30
+turn SELECT -5
+tap SEL
+wait 30
+expect page 1
+turn SELECT 1
+wait 30
+expect test 1
+shot practice_test.png
+tap PLAY
+wait 100
+expect cards 10
+answer_all right
+wait 30
+expect ps 3
+expect ask 3
+expect open 15
+shot placement_ask.png
+tap PLAY
+wait 30
+expect ask 0
+expect open 25
+expect round 5
+turn SELECT 1
+wait 30
+expect test 0
+
+# ---- a backup in: six chunks ("prog_load_0" .. "prog_load_5"), loaded only after PLAY on the FM-1
+sysex_out
+sysex F0 7D 4D 4F 01 05 00 06 00 01 07 00 02 00 0F 64 00 00 00 00 5A 00 00 00 00 03 02 03 02 03 02 03 00 02 03 02 03 02 03 02 00 03 02 03 02 03 02 03 00 02 03 02 03 02 03 02 00 03 02 00 00 00 00 00 F7
+wait 20
+sysex F0 7D 4D 4F 01 05 01 06 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 06 00 F7
+wait 20
+sysex F0 7D 4D 4F 01 05 02 06 00 06 00 06 00 06 00 06 00 00 06 00 06 00 06 00 00 06 00 06 00 06 00 06 00 00 06 00 06 00 06 00 00 06 00 06 00 06 00 06 00 00 06 00 06 00 06 00 00 06 00 06 00 06 00 06 F7
+wait 20
+sysex F0 7D 4D 4F 01 05 03 06 00 00 06 00 06 00 06 00 7C 06 00 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F F7
+wait 20
+sysex F0 7D 4D 4F 01 05 04 06 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F F7
+wait 20
+sysex F0 7D 4D 4F 01 05 05 06 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 03 7F 44 7B F7
+wait 20
+wait 100
+expect ask 2
+shot load_ask.png
+tap PLAY
+wait 30
+expect ask 0
+expect open 15
+expect round 7
+expect answered 100
+expect_sysex F0 7D 4D 4F 01 45 00 F7
+# one chunk short and another out of turn: refused, nothing asked
+sysex F0 7D 4D 4F 01 05 00 06 00 01 07 00 02 00 0F 64 00 00 00 00 5A 00 00 00 00 03 02 03 02 03 02 03 00 02 03 02 03 02 03 02 00 03 02 03 02 03 02 03 00 02 03 02 03 02 03 02 00 03 02 00 00 00 00 00 F7
+wait 20
+sysex F0 7D 4D 4F 01 05 02 06 00 06 00 06 00 06 00 06 00 00 06 00 06 00 06 00 00 06 00 06 00 06 00 06 00 00 06 00 06 00 06 00 00 06 00 06 00 06 00 06 00 00 06 00 06 00 06 00 00 06 00 06 00 06 00 06 F7
+wait 50
+expect ask 0
+expect_sysex F0 7D 4D 4F 01 45 02 F7
+reboot
+wait 600
+expect open 15
+expect round 7

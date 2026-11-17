@@ -1,0 +1,249 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- MORSE for the M-VAVE FM-1: back up and restore the learning progress over Web MIDI (firmware 0.4 and later).
+     The protocol is the one in host/morse/progress.py of github.com/daviddwlee84/M-VAVE_FM-1 (PROTOCOL.md,
+     "Progress"); the JSON file is the same as `morse backup` writes. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MORSE progress</title>
+<style>
+  :root { --bg: #f6f6f3; --fg: #1b1b1f; --dim: #6b6b73; --card: #ffffff; --line: #dcdcd6; --accent: #0a72c2;
+          --ok: #1f8f4e; --bad: #c0392b; --l0: #e9d6d6; --l1: #e8b9a0; --l2: #eccb7c; --l3: #d9d77a; --l4: #a7d78f;
+          --l5: #6fd39a; --closed: #ececea; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #111114; --fg: #ececf0; --dim: #9a9aa6; --card: #1b1b20; --line: #2c2c34; --accent: #5ab4ff;
+            --ok: #50dc78; --bad: #f0463c; --l0: #462828; --l1: #8c3c28; --l2: #be781e; --l3: #aaaa28;
+            --l4: #5ab446; --l5: #3cd278; --closed: #18181c; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; }
+  p.lead { color: var(--dim); margin: 0 0 20px; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin: 14px 0; }
+  h2 { font-size: 1.05rem; margin: 0 0 8px; }
+  button, label.file { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--accent);
+                       background: var(--accent); color: #fff; cursor: pointer; display: inline-block; }
+  button:disabled { opacity: .45; cursor: default; }
+  button.ghost { background: transparent; color: var(--accent); }
+  input[type=file] { display: none; }
+  #status { font-weight: 600; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .dim { color: var(--dim); }
+  .chart { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin-top: 10px; max-width: 420px; }
+  .chart div { text-align: center; padding: 6px 0; border-radius: 5px; font-weight: 700; font-family: ui-monospace, monospace; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  code { font-family: ui-monospace, monospace; font-size: .92em; }
+  ol { padding-left: 1.2em; margin: 6px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>MORSE progress</h1>
+  <p class="lead">Back up what your FM-1 has learnt in MORSE, and put it back after trying another firmware.
+    Chrome or Edge on a computer, the FM-1 on USB and running MORSE 0.4 or later.</p>
+
+  <section>
+    <h2>1. Connect</h2>
+    <div class="row"><button id="connect">Connect to the FM-1</button> <span id="status" class="dim">not connected</span></div>
+    <p class="dim">The browser asks to use MIDI devices with system exclusive messages: allow it.</p>
+  </section>
+
+  <section>
+    <h2>2. Back up</h2>
+    <div class="row"><button id="backup" disabled>Download the progress</button></div>
+    <p class="dim">Nothing changes on the FM-1. The file is plain JSON: every letter's two boxes (0..5), the rounds.</p>
+  </section>
+
+  <section>
+    <h2>3. Restore</h2>
+    <div class="row"><label class="file" id="pick">Choose a backup file<input type="file" id="file" accept=".json,application/json"></label>
+      <button id="restore" disabled>Send it to the FM-1</button></div>
+    <p id="restore-note" class="dim">The FM-1 shows what it got and asks: press <b>PLAY</b> on it to load, <b>HOME</b> to keep what is there.</p>
+  </section>
+
+  <section id="view" hidden>
+    <h2 id="view-title">The progress</h2>
+    <div id="summary" class="dim"></div>
+    <div class="chart" id="chart"></div>
+  </section>
+
+  <p class="dim">Source and licence (GPL-3.0-or-later):
+    <a href="https://github.com/daviddwlee84/fm1-morse">github.com/daviddwlee84/fm1-morse</a>.
+    Without a browser: <code>morse backup FILE</code> / <code>morse restore FILE</code> from the host in
+    <a href="https://github.com/daviddwlee84/M-VAVE_FM-1/tree/main/host/morse">M-VAVE_FM-1</a>.</p>
+</main>
+<script>
+"use strict";
+const ORDER = "KMURESNAPTLWI.JZ=FOY,VG5/Q92H38B?47C1D60X", N = ORDER.length, GROUP = 5, TOP = 5, NEVER = 0xFFFF;
+const BLOB_N = 2 + 2 + 1 + 4 + 4 + N * 2 + N * 4, WIRE_N = 1 + BLOB_N + 2, CHUNK = 49;
+const FRAMES = Math.ceil(WIRE_N / CHUNK), FORMAT = 1;
+const HEAD = [0x7D, 0x4D, 0x4F], VER = 1;
+const T_HELLO_ACK = 0x01, T_PROG_REQ = 0x04, T_PROG_LOAD = 0x05;
+const T_HELLO = 0x41, T_HEARTBEAT = 0x42, T_PROG = 0x44, T_PROG_DONE = 0x45;
+const $ = id => document.getElementById(id);
+let out = null, inp = null, firmware = null, asm = null, onDone = null, picked = null;
+
+function status(text, cls) { $("status").textContent = text; $("status").className = cls || ""; }
+
+function crc16(b) {
+  let c = 0xFFFF;
+  for (const x of b) { c ^= x << 8; for (let k = 0; k < 8; k++) c = ((c & 0x8000) ? (c << 1) ^ 0x1021 : c << 1) & 0xFFFF; }
+  return c;
+}
+function pack7(b) {
+  const o = [];
+  for (let i = 0; i < b.length; i += 7) {
+    const part = b.slice(i, i + 7);
+    o.push(part.reduce((h, x, j) => h | ((x >> 7) & 1) << j, 0), ...part.map(x => x & 0x7F));
+  }
+  return o;
+}
+function unpack7(b) {
+  const o = [];
+  for (let i = 0; i < b.length;) { const hi = b[i++]; for (let j = 0; j < 7 && i < b.length; j++) o.push(b[i++] | ((hi >> j) & 1) << 7); }
+  return o;
+}
+function check(p) {   // what the firmware's ln_valid checks
+  if (!(p.open >= GROUP && p.open <= N)) throw Error(`open must be ${GROUP}..${N}`);
+  if (p.right > p.answered) throw Error("right is more than answered");
+  for (let i = 0; i < N; i++) for (let d = 0; d < 2; d++) {
+    if (!(p.box[i][d] >= 0 && p.box[i][d] <= TOP)) throw Error(`${ORDER[i]}: a box is not 0..${TOP}`);
+    const l = p.last[i][d];
+    if (l !== null && !(l >= 0 && l <= p.round)) throw Error(`${ORDER[i]}: answered after round ${p.round}`);
+  }
+  return p;
+}
+function blob(p) {
+  const b = [], put = (v, n) => { for (let k = 0; k < n; k++) b.push((v >>> (8 * k)) & 0xFF); };
+  put(p.round, 2); put(p.streak, 2); put(p.open, 1); put(p.answered, 4); put(p.right, 4);
+  for (const x of p.box) b.push(x[0], x[1]);
+  for (const x of p.last) { put(x[0] === null ? NEVER : x[0], 2); put(x[1] === null ? NEVER : x[1], 2); }
+  return b;
+}
+function unblob(b) {
+  let o = 0; const get = n => { let v = 0; for (let k = 0; k < n; k++) v += b[o++] * 2 ** (8 * k); return v; };
+  const p = { round: get(2), streak: get(2), open: get(1), answered: get(4), right: get(4), box: [], last: [] };
+  for (let i = 0; i < N; i++) p.box.push([b[o++], b[o++]]);
+  for (let i = 0; i < N; i++) { const a = get(2), c = get(2); p.last.push([a === NEVER ? null : a, c === NEVER ? null : c]); }
+  return check(p);
+}
+function frame(type, payload) { return [0xF0, ...HEAD, VER, type, ...payload, 0xF7]; }
+function frames(p) {
+  const body = [FORMAT, ...blob(check(p))], c = crc16(body), w = [...body, c & 0xFF, c >> 8];
+  const f = [];
+  for (let i = 0; i < FRAMES; i++) f.push(frame(T_PROG_LOAD, [i, FRAMES, ...pack7(w.slice(i * CHUNK, (i + 1) * CHUNK))]));
+  return f;
+}
+function toJSON(p) {
+  const chars = {};
+  ORDER.split("").forEach((c, i) => chars[c] = { recognise: p.box[i][0], send: p.box[i][1],
+    last_recognise: p.last[i][0], last_send: p.last[i][1] });
+  return JSON.stringify({ format: "fm1-morse-progress", version: 1, firmware: firmware ? firmware.join(".") : null,
+    round: p.round, streak: p.streak, open: p.open, answered: p.answered, right: p.right, chars }, null, 1) + "\n";
+}
+function fromJSON(text) {
+  const d = JSON.parse(text);
+  if (d.format !== "fm1-morse-progress") throw Error("not a MORSE progress file");
+  if (d.version !== 1) throw Error(`file version ${d.version}, this page knows 1`);
+  const p = { round: +d.round, streak: +(d.streak || 0), open: +d.open, answered: +(d.answered || 0),
+              right: +(d.right || 0), box: [], last: [] };
+  for (const c of Object.keys(d.chars || {})) if (!ORDER.includes(c)) throw Error(`${c} is not in the course`);
+  for (const c of ORDER) { const e = (d.chars || {})[c] || {};
+    p.box.push([+(e.recognise || 0), +(e.send || 0)]);
+    p.last.push([e.last_recognise ?? null, e.last_send ?? null]); }
+  return check(p);
+}
+function show(p, title) {
+  $("view").hidden = false;
+  $("view-title").textContent = title;
+  const learnt = p.box.slice(0, p.open).filter(b => b[0] >= 2 && b[1] >= 1).length;
+  $("summary").textContent = `Round ${p.round} · ${p.open} letters open · ${learnt} past the line · ` +
+    `${p.answered} answered, ${p.right} right · streak ${p.streak}`;
+  const ch = $("chart"); ch.innerHTML = "";
+  ORDER.split("").forEach((c, i) => { const d = document.createElement("div"); d.textContent = c;
+    d.style.background = i < p.open ? `var(--l${Math.floor((p.box[i][0] + p.box[i][1]) / 2)})` : "var(--closed)";
+    if (i >= p.open) d.style.color = "var(--dim)"; ch.appendChild(d); });
+}
+
+function onMessage(e) {
+  const d = Array.from(e.data);
+  if (d[0] !== 0xF0 || d[1] !== HEAD[0] || d[2] !== HEAD[1] || d[3] !== HEAD[2]) return;
+  const type = d[5], pl = d.slice(6, d.length - 1);
+  if (type === T_HELLO || type === T_HEARTBEAT) {
+    if (type === T_HELLO && pl.length >= 3) firmware = [pl[1], pl[2]];
+    out.send(frame(T_HELLO_ACK, [VER]));
+    ready();
+  } else if (type === T_PROG && asm) asm(pl);
+  else if (type === T_PROG_DONE && onDone) onDone(pl[0]);
+}
+function ready() {
+  const old = firmware && (firmware[0] === 0 && firmware[1] < 4);
+  status(firmware ? `MORSE ${firmware.join(".")} connected` + (old ? ": update to 0.4 for backups" : "") : "MORSE connected",
+         old ? "bad" : "ok");
+  $("backup").disabled = !!old;
+  $("restore").disabled = !!old || !picked;
+}
+
+$("connect").onclick = async () => {
+  try {
+    const m = await navigator.requestMIDIAccess({ sysex: true });
+    const find = list => [...list.values()].find(p => /MORSE/i.test(p.name || "")) || null;
+    out = find(m.outputs); inp = find(m.inputs);
+    if (!out || !inp) { status("no MIDI port named MORSE: is the FM-1 on USB and running MORSE?", "bad"); return; }
+    inp.onmidimessage = onMessage;
+    status("waiting for the FM-1 to say HELLO…", "dim");
+    setTimeout(() => { if ($("backup").disabled && !firmware) ready(); }, 2500);   // a host answered it already
+  } catch (err) { status(`MIDI not available: ${err.message}`, "bad"); }
+};
+
+$("backup").onclick = () => {
+  let buf = [], next = 0;
+  status("reading…", "dim");
+  const timer = setTimeout(() => { asm = null; status("the FM-1 sent nothing back (MORSE 0.4 or later?)", "bad"); }, 5000);
+  asm = pl => {
+    if (pl[1] !== FRAMES || pl[0] !== next) { asm = null; clearTimeout(timer); status("a chunk went missing: try again", "bad"); return; }
+    if (pl[0] === 0) buf = [];
+    buf.push(...unpack7(pl.slice(2))); next++;
+    if (next < FRAMES) return;
+    asm = null; clearTimeout(timer);
+    try {
+      const w = buf.slice(0, WIRE_N);
+      if (w[0] !== FORMAT) throw Error(`format ${w[0]}`);
+      if (crc16(w.slice(0, -2)) !== (w[WIRE_N - 2] | w[WIRE_N - 1] << 8)) throw Error("CRC mismatch");
+      const p = unblob(w.slice(1, -2));
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([toJSON(p)], { type: "application/json" }));
+      a.download = `fm1-morse-progress-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      show(p, "On the FM-1 (saved)");
+      ready();
+    } catch (err) { status(`refused: ${err.message}`, "bad"); }
+  };
+  out.send(frame(T_PROG_REQ, []));
+};
+
+$("file").onchange = async () => {
+  const f = $("file").files[0]; if (!f) return;
+  try { picked = fromJSON(await f.text()); show(picked, `In ${f.name}`); $("restore-note").className = "dim"; }
+  catch (err) { picked = null; $("restore-note").textContent = `That file will not load: ${err.message}`; $("restore-note").className = "bad"; }
+  if (out) ready();
+};
+
+$("restore").onclick = async () => {
+  if (!picked) return;
+  $("restore").disabled = true;
+  status("sent: press PLAY on the FM-1 to load it, HOME to keep what is there", "dim");
+  onDone = code => {
+    onDone = null;
+    status(code === 0 ? "loaded on the FM-1" : code === 1 ? "not loaded: declined on the FM-1" : "the FM-1 refused it", code === 0 ? "ok" : "bad");
+    ready();
+  };
+  for (const f of frames(picked)) { out.send(f); await new Promise(r => setTimeout(r, 30)); }
+};
+
+if (!navigator.requestMIDIAccess) status("this browser has no Web MIDI: use Chrome or Edge", "bad");
+</script>
+</body>
+</html>

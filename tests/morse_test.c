@@ -430,6 +430,131 @@ static void test_content(void)
     CHECK(ct_gloss("XYZ") == 0, "no meaning for XYZ");
 }
 
+
+/* ------------------------------------------------------------------- judge --- */
+static mo_judge_t judge(const char *ch, const uint16_t *mark, uint32_t n, uint32_t gap, uint32_t dit_est)
+{
+    uint16_t g[8];
+    uint32_t i;
+    for (i = 0; i < 8; i++)
+        g[i] = (uint16_t)(i ? gap : 0u);
+    return mo_judge(mark, g, n, mo_code(ch[0]), dit_est);
+}
+
+static void test_judge(void)
+{
+    mo_dec_t d;
+    mo_judge_t j;
+    static const uint16_t m180[2] = {180, 180}, m60[2] = {60, 60}, a13[2] = {100, 300}, a12[2] = {100, 200};
+    static const uint16_t slow_a[2] = {240, 720}, a_close[2] = {150, 190}, a_flat[2] = {150, 150};
+    static const uint16_t e150[1] = {150}, t180[1] = {180}, t110[1] = {110}, extra[3] = {100, 300, 100};
+    static const uint16_t m_mixed[2] = {80, 240};
+    /* a hand imitating 20 WPM (dah 180 ms) with SEND at 10 (the old decoder's line was 240 ms) */
+    j = judge("M", m180, 2, 60, 90);
+    CHECK(j.verdict == MJ_RIGHT, "M as two 180 ms dahs: right (%u)", j.verdict);
+    j = judge("I", m60, 2, 60, 90);
+    CHECK(j.verdict == MJ_RIGHT, "I as two 60 ms dits: right");
+    j = judge("T", t180, 1, 0, 90);
+    CHECK(j.verdict == MJ_RIGHT, "T 180 ms: right");
+    j = judge("E", e150, 1, 0, 90);
+    CHECK(j.verdict == MJ_RIGHT, "E 150 ms on a 90 ms hand: right");
+    j = judge("T", t110, 1, 0, 90);
+    CHECK(j.verdict == MJ_WRONG, "T 110 ms on a 90 ms hand: a dit");
+    j = judge("M", m_mixed, 2, 80, 90);
+    CHECK(j.verdict == MJ_WRONG, "M keyed dit-dah: wrong");
+    j = judge("A", a13, 2, 100, 100);
+    CHECK(j.verdict == MJ_RIGHT && j.score >= 85, "A at 1:3, gap 1: great (%u)", j.score);
+    j = judge("A", a12, 2, 100, 100);
+    CHECK(j.verdict == MJ_RIGHT && j.score < 65 && j.hint == MH_DAH_SHORT, "A at 1:2: right, close, dahs short (%u %u)",
+          j.score, j.hint);
+    j = judge("A", slow_a, 2, 240, 60);
+    CHECK(j.verdict == MJ_RIGHT && j.score >= 85, "A at 5 WPM to a 20 WPM prompt: right by its own rhythm");
+    j = judge("A", a_close, 2, 100, 100);
+    CHECK(j.verdict == MJ_ALMOST && j.hint == MH_DAH_SHORT, "A 150/190: almost, the dah short (%u %u)", j.verdict,
+          j.hint);
+    j = judge("A", a_flat, 2, 100, 100);
+    CHECK(j.verdict == MJ_WRONG, "A 150/150: wrong");
+    j = judge("A", extra, 3, 100, 100);
+    CHECK(j.verdict == MJ_WRONG && j.hint == MH_EXTRA, "an extra mark");
+    j = judge("A", a13, 1, 100, 100);
+    CHECK(j.verdict == MJ_WRONG && j.hint == MH_MISSING, "a mark missing");
+    j = judge("A", a13, 2, 280, 100);
+    CHECK(j.verdict == MJ_ALMOST && j.hint == MH_GAP_LONG, "a gap inside near a letter's: almost (%u %u)", j.verdict,
+          j.hint);
+    j = judge("A", a13, 2, 100, 100);
+    CHECK(j.dit == 100, "the answer's dit (%u)", j.dit);
+    /* the hand carried */
+    mo_dec_init(&d, 120, 120);
+    mo_dec_mark(&d, 60);
+    mo_dec_restart(&d);
+    CHECK(d.pat == 1 && d.marks == 0 && d.dit_avg < 120, "restart keeps the averages, drops the character");
+    mo_dec_init(&d, 120, 120);
+    mo_dec_teach(&d, m180, 2, mo_code('M'));
+    CHECK(d.dah_avg < 360 && d.dah_avg >= 2 * d.dit_avg, "taught: the dahs move down (%u %u)", d.dit_avg, d.dah_avg);
+}
+
+static void test_learn_hand(void)
+{
+    ln_state_t s, t;
+    ln_round_t r;
+    const ln_card_t *c;
+    uint8_t blob[LN_BLOB_N];
+    uint32_t i, n;
+    ln_init(&s);
+    /* almost: the box stays, asked again */
+    ln_build(&s, &r, 10, 0u, 3);
+    while ((c = ln_card(&r)) != 0 && c->type == CARD_NEW)
+        ln_answer(&s, &r, LN_RIGHT);
+    ln_answer(&s, &r, LN_RIGHT);
+    n = r.n;
+    i = r.card[r.at].ch;
+    ln_answer(&s, &r, LN_ALMOST);
+    CHECK(r.n == n + 1 && r.near == 1 && r.card[r.n - 1].again, "almost: asked again");
+    CHECK(s.box[i][LN_REC] == 0 && s.last[i][LN_REC] == 0, "almost: no box moved");
+    while (ln_card(&r))
+        ln_answer(&s, &r, LN_RIGHT);
+    ln_finish(&s, &r);
+    CHECK(ln_valid(&s), "valid after a round with an almost");
+    /* by hand */
+    ln_set_level(&s, 7, 4);
+    CHECK(s.open == 10 && s.box[7][LN_REC] == 4 && s.box[7][LN_SEND] == 4, "a level on a closed one opens its group");
+    CHECK(s.box[5][LN_REC] == 2 && s.box[5][LN_SEND] == 1 && ln_valid(&s), "the others opened at the line");
+    ln_set_level(&s, 7, 0);
+    CHECK(s.last[7][LN_REC] == LN_NEVER && ln_new_count(&s) >= 1, "level 0: new again");
+    ln_mark_known(&s, 12);
+    CHECK(s.open == 15 && s.box[12][LN_REC] == 3 && s.box[12][LN_SEND] == 2 && ln_valid(&s), "marked known");
+    ln_open_to(&s, 23);
+    CHECK(s.open == 25 && ln_valid(&s), "open to 23: 25");
+    ln_open_to(&s, 10);
+    CHECK(s.open == 10 && s.box[12][LN_REC] == 0 && s.last[12][LN_REC] == LN_NEVER && ln_valid(&s), "closed again");
+    ln_step_back(&s);
+    CHECK(s.box[5][LN_REC] == 1 && s.box[5][LN_SEND] == 0 && ln_valid(&s), "a step back");
+    /* placement */
+    ln_init(&s);
+    ln_build(&s, &r, 20, LN_PLACE, 9);
+    CHECK(r.n == LN_PLACE_N && r.place, "placement: ten cards (%u)", r.n);
+    for (i = 0; i < r.n; i++) {
+        uint32_t k;
+        CHECK(r.card[i].ch >= 5 && r.card[i].ch < 15 && r.card[i].type == CARD_HEAR_CHOOSE, "the next two groups");
+        for (k = 0; k < 4; k++)
+            CHECK(r.card[i].opt[k] < 15, "choices among them");
+    }
+    while ((c = ln_card(&r)) != 0)       /* the first group all right, one of the second wrong */
+        ln_answer(&s, &r, c->ch != 12);
+    CHECK(ln_finish(&s, &r) == 0 && s.round == 0, "a placement is no round");
+    CHECK(s.open == 5 && s.box[5][LN_REC] == 0, "nothing changed before it is applied");
+    CHECK(ln_place_count(&r) == 9, "nine known");
+    n = ln_place_apply(&s, &r);
+    CHECK(s.open == 10 && n == 5 && s.box[5][LN_REC] == 3 && s.box[10][LN_REC] == 0 && ln_valid(&s),
+          "group 2 opened and known; group 3 stays shut (%u %u)", s.open, n);
+    /* a backup */
+    s.answered = 1234, s.right = 1000, s.streak = 3;
+    ln_blob(&s, blob);
+    CHECK(ln_unblob(&t, blob) && !memcmp(&t, &s, sizeof s), "a backup round trip");
+    blob[4] = 99;
+    CHECK(!ln_unblob(&t, blob), "nonsense refused");
+}
+
 int main(void)
 {
     test_table();
@@ -438,6 +563,8 @@ int main(void)
     test_decoder();
     test_keyer();
     test_learn();
+    test_judge();
+    test_learn_hand();
     test_content();
     printf("%d checks, %d failed\n", checks, fails);
     return fails != 0;
