@@ -24,7 +24,8 @@ uint32_t mo_dit_ms(uint32_t wpm);
 uint32_t mo_gap_ms(uint32_t wpm, uint32_t eff_wpm);
 
 /* ------------------------------------------------------------------ player --- */
-/* text to key-down / key-up, one millisecond a call. A queue: characters pushed while it plays are played after */
+/* text to key-down / key-up, one millisecond a call. A queue: characters pushed while it plays are played after.
+ * Characters between < and > are run together as one sign (a prosign: <SK> is ...-.-, <AR> is .-.-.) */
 #define MO_PLAY_Q 64u
 typedef struct {
     char q[MO_PLAY_Q];
@@ -35,6 +36,7 @@ typedef struct {
     uint32_t left;                       /* ms left of it */
     char cur;                            /* the character playing, 0 between characters */
     uint8_t started;                     /* cur just began (cleared by the reader) */
+    uint8_t joined;                      /* inside < >: one dit between its characters */
 } mo_player_t;
 
 void mo_player_init(mo_player_t *p, uint32_t dit_ms, uint32_t gap_ms);
@@ -60,15 +62,21 @@ int mo_keyer_tick(mo_keyer_t *k, int dit, int dah);
 /* ----------------------------------------------------------------- decoder --- */
 /* marks and gaps in, characters out. It keeps running averages of the dit, the dah and the gap between characters
  * it hears and splits them halfway, so it follows a sender a good way off the speed it was started at, and a
- * Farnsworth spacing. gap_ms at the start: the spacing unit expected (mo_gap_ms; the dit when not stretched). */
+ * Farnsworth spacing. Two marks in a character two or more times apart say which is which whatever the averages
+ * thought: the averages move to them at once, and the earlier mark is read again (a beginner's slow dits taken
+ * for dahs come right at the first real dah). gap_ms at the start: the spacing unit expected (mo_gap_ms; the dit
+ * when not stretched). */
 typedef struct {
     uint32_t dit_avg, dah_avg;           /* ms, smoothed */
     uint32_t cgap;                       /* the gap between characters it hears, ms, smoothed (Farnsworth stretches it);
                                           * a word's end is 5/3 of it */
     uint8_t pat;                         /* the elements so far, with the leading 1; 1 = none */
     uint8_t word;                        /* a character since the last space (a space is due after a long gap) */
+    uint8_t last_pat;                    /* the elements of the character it gave last (a code; 0 too long) */
+    uint32_t prev;                       /* the mark before, ms, in this character (0: none yet) */
     uint32_t marks, dits, dahs;          /* counted (for the speed shown, and a sending check) */
     uint32_t dit_sum, dah_sum;           /* ms of the dits and dahs counted (their ratio) */
+    uint32_t egap_sum, egap_n;           /* the gaps inside characters (should be one dit) */
 } mo_dec_t;
 
 void mo_dec_init(mo_dec_t *d, uint32_t dit_ms, uint32_t gap_ms);
@@ -83,4 +91,7 @@ uint32_t mo_dec_wpm(const mo_dec_t *d);    /* the speed it hears */
 uint8_t mo_dec_pending(const mo_dec_t *d); /* the pattern so far (a code, 1 = none) */
 /* dah : dit ratio of what it counted, in tenths (30 = 3.0, the textbook), 0 before a dit and a dah */
 uint32_t mo_dec_ratio10(const mo_dec_t *d);
+/* the gaps inside characters in dits, tenths (10 = 1.0, the textbook; long ones split a character), 0 before one */
+uint32_t mo_dec_gap10(const mo_dec_t *d);
+int mo_dec_is_dah(const mo_dec_t *d, uint32_t ms);   /* how it would read a mark of ms now */
 void mo_dec_reset_stats(mo_dec_t *d);

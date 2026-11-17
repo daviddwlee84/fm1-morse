@@ -5,6 +5,7 @@
 #include <string.h>
 #include "../morse.c"
 #include "../learn.c"
+#include "../content.c"
 
 static int fails, checks;
 #define CHECK(c, ...) do { checks++; if (!(c)) { printf("FAIL %s:%d ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); fails++; } } while (0)
@@ -69,6 +70,11 @@ static void test_timing(void)
     CHECK(t == 120 + 3 * 120, "E then the character gap (%u)", t);
     t = play_ms("#E", 20, 20);
     CHECK(t == 60 + 180, "unknown characters skipped (%u)", t);
+    /* a prosign: S and K run together (...-.- = 15 units), then the character gap */
+    t = play_ms("<SK>", 20, 20);
+    CHECK(t == (15 + 3) * 60, "<SK> is one sign (%u)", t);
+    t = play_ms("<SK>", 20, 10);
+    CHECK(t == 15 * 60 + 3 * 217, "<SK> at 20/10: its inside unstretched (%u)", t);
 }
 
 static void test_player_queue(void)
@@ -162,6 +168,12 @@ static void test_decoder(void)
     }
     decode_run("CQ CQ DE FM1 K", 20, 8, 20, 10, out);
     CHECK(!strcmp(out, "CQ CQ DE FM1 K"), "Farnsworth 20/8: %s", out);
+    decode_run("<AR> <BT> <KN>", 20, 20, 20, 0, out);
+    CHECK(!strcmp(out, "+ = ("), "prosigns read as their characters: %s", out);
+    /* a beginner at 9 WPM, the decoder started at 20: even the gaps inside the first letter read as letter gaps, so
+     * the first word is lost (why the send speed is its own setting); it has caught up by the second */
+    decode_run("SOS SOS ETA", 9, 9, 20, 0, out);
+    CHECK(strlen(out) >= 7 && !strcmp(out + strlen(out) - 7, "SOS ETA"), "decoder at 20, sender 9: caught up (%s)", out);
     /* started at 20, the sender 30 % slower and faster: it follows within a few characters */
     decode_run(TEXT, 14, 14, 20, 10, out);
     CHECK(diff(out, TEXT) <= 3, "decoder at 20, sender 14 (%u off): %s", diff(out, TEXT), out);
@@ -187,6 +199,21 @@ static void test_decoder(void)
         mo_dec_mark(&d, 180);
         CHECK(mo_dec_ratio10(&d) == 30, "dah:dit 3.0 (%u)", mo_dec_ratio10(&d));
         CHECK(mo_dec_wpm(&d) >= 19 && mo_dec_wpm(&d) <= 21, "hears 20 WPM (%u)", mo_dec_wpm(&d));
+        /* A with a long gap inside: the gap reads 2.0 dits; the letter given and its pattern kept */
+        mo_dec_init(&d, 60, 60);
+        mo_dec_mark(&d, 60);
+        CHECK(mo_dec_gap(&d, 110, c) == 0, "110 ms inside a letter at 60: still the letter");
+        mo_dec_mark(&d, 180);
+        CHECK(mo_dec_gap10(&d) >= 17 && mo_dec_gap10(&d) <= 19, "gap 1.8 dits (%u)", mo_dec_gap10(&d));
+        CHECK(mo_dec_idle(&d, 300) == 'A' && d.last_pat == mo_code('A'), "A, its pattern kept");
+        /* a slow dit taken for a dah, then a real dah: read again as .- */
+        mo_dec_init(&d, 60, 60);
+        mo_dec_mark(&d, 130);
+        CHECK(mo_dec_pending(&d) == 0x3u, "130 ms at a 60 ms start: first read as a dah");
+        mo_dec_gap(&d, 100, c);
+        mo_dec_mark(&d, 400);
+        CHECK(mo_dec_pending(&d) == mo_code('A'), "the dah after it: .- (pattern %x)", mo_dec_pending(&d));
+        CHECK(mo_dec_is_dah(&d, 400) && !mo_dec_is_dah(&d, 130), "the averages moved to it");
     }
 }
 
@@ -362,6 +389,47 @@ static void test_learn(void)
     CHECK(ln_finish(&s, &r) == 0 && s.round == 0, "only shown: not a round");
 }
 
+/* ----------------------------------------------------------------- content --- */
+static int playable(const char *s)       /* only characters with a code, spaces and prosign brackets */
+{
+    for (; *s; s++)
+        if (*s != ' ' && *s != '<' && *s != '>' && !mo_code(*s))
+            return 0;
+    return 1;
+}
+
+static void test_content(void)
+{
+    ct_gen_t g;
+    char line[CT_LINE_MAX + 1];
+    const char *gloss;
+    uint32_t p, i, k;
+    ct_init(&g, 42);
+    for (p = 0; p < LP_N; p++)
+        for (i = 0; i < 60; i++) {
+            ct_line(&g, (int)p, 5, line, &gloss);
+            CHECK(line[0] && strlen(line) <= CT_LINE_MAX, "%s line %u: length %u", LP_NAME[p], i, (unsigned)strlen(line));
+            CHECK(playable(line), "%s line %u playable: %s", LP_NAME[p], i, line);
+            CHECK((p == LP_ABBR) == (gloss != 0), "%s: a meaning only for abbreviations", LP_NAME[p]);
+            if (p == LP_KOCH)
+                for (k = 0; line[k]; k++)
+                    CHECK(line[k] == ' ' || ln_index(line[k]) < 5, "Koch groups only from the 5 open: %s", line);
+        }
+    ct_init(&g, 7);
+    ct_line(&g, LP_QSO, 0, line, &gloss);
+    CHECK(!strncmp(line, "CQ CQ CQ DE ", 12), "a QSO starts with CQ: %s", line);
+    for (i = 0; i < 5; i++)
+        ct_line(&g, LP_QSO, 0, line, &gloss);
+    CHECK(strstr(line, "<SK>") != 0, "and ends with <SK>: %s", line);
+    ct_line(&g, LP_QSO, 0, line, &gloss);
+    CHECK(!strncmp(line, "CQ CQ CQ DE ", 12), "then a new one: %s", line);
+    for (i = 0; i < CT_PHRASE_WHITE_N; i++)
+        CHECK(ct_gloss(CT_PHRASE_WHITE[i]) && playable(CT_PHRASE_WHITE[i]), "phrase %s has a meaning", CT_PHRASE_WHITE[i]);
+    for (i = 0; i < CT_PHRASE_BLACK_N; i++)
+        CHECK(ct_gloss(CT_PHRASE_BLACK[i]) && playable(CT_PHRASE_BLACK[i]), "phrase %s has a meaning", CT_PHRASE_BLACK[i]);
+    CHECK(ct_gloss("XYZ") == 0, "no meaning for XYZ");
+}
+
 int main(void)
 {
     test_table();
@@ -370,6 +438,7 @@ int main(void)
     test_decoder();
     test_keyer();
     test_learn();
+    test_content();
     printf("%d checks, %d failed\n", checks, fails);
     return fails != 0;
 }

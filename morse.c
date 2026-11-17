@@ -105,6 +105,7 @@ void mo_player_init(mo_player_t *p, uint32_t dit_ms, uint32_t gap_ms)
     p->left = 0;
     p->cur = 0;
     p->started = 0;
+    p->joined = 0;
 }
 
 int mo_player_push(mo_player_t *p, char c)
@@ -124,6 +125,7 @@ void mo_player_stop(mo_player_t *p)
     p->on = 0;
     p->left = 0;
     p->cur = 0;
+    p->joined = 0;
 }
 
 int mo_player_busy(const mo_player_t *p) { return p->left || p->on || p->pat > 1u || p->head != p->tail; }
@@ -145,7 +147,7 @@ static int mo_player_next(mo_player_t *p)
             p->left = p->dit;
         else {
             p->cur = 0;
-            p->left = 3u * p->gap;
+            p->left = p->joined ? p->dit : 3u * p->gap;   /* in a prosign: run on */
         }
         return 1;
     }
@@ -158,8 +160,21 @@ static int mo_player_next(mo_player_t *p)
         uint8_t code;
         p->tail = (p->tail + 1u) % MO_PLAY_Q;
         if (c == ' ') {                  /* with the 3 after the character before: a word's 7 */
+            p->joined = 0;
             p->left = 4u * p->gap;
             return 1;
+        }
+        if (c == '<') {
+            p->joined = 1;
+            continue;
+        }
+        if (c == '>') {                  /* the prosign's end: the rest of a character gap after its last part */
+            p->joined = 0;
+            if (3u * p->gap > p->dit) {
+                p->left = 3u * p->gap - p->dit;
+                return 1;
+            }
+            continue;
         }
         if (!(code = mo_code(c)))
             continue;
@@ -254,6 +269,8 @@ void mo_dec_init(mo_dec_t *d, uint32_t dit_ms, uint32_t gap_ms)
     d->cgap = 3u * (gap_ms > dit_ms ? gap_ms : dit_ms);
     d->pat = 1;
     d->word = 0;
+    d->last_pat = 0;
+    d->prev = 0;
     mo_dec_reset_stats(d);
 }
 
@@ -261,7 +278,10 @@ void mo_dec_reset_stats(mo_dec_t *d)
 {
     d->marks = d->dits = d->dahs = 0;
     d->dit_sum = d->dah_sum = 0;
+    d->egap_sum = d->egap_n = 0;
 }
+
+int mo_dec_is_dah(const mo_dec_t *d, uint32_t ms) { return ms >= (d->dit_avg + d->dah_avg) / 2u; }
 
 uint32_t mo_dec_unit(const mo_dec_t *d) { return (d->dit_avg + d->dah_avg / 3u) / 2u; }
 
@@ -270,6 +290,24 @@ void mo_dec_mark(mo_dec_t *d, uint32_t ms)
     int dah;
     if (ms < 4u)                         /* a bounce, not a mark */
         return;
+    if (d->prev && d->pat > 1u && d->pat < 0x80u) {   /* two marks of this character, far apart: a dit and a dah */
+        uint32_t lo = ms < d->prev ? ms : d->prev, hi = ms < d->prev ? d->prev : ms;
+        if (hi >= 2u * lo && hi <= 8u * lo) {
+            int prev_dah = (int)(d->pat & 1u), prev_should = d->prev == hi;
+            d->dit_avg = (d->dit_avg + lo) / 2u;
+            d->dah_avg = (d->dah_avg + hi) / 2u;
+            if (prev_dah != prev_should) {   /* the mark before was read wrong: read it again */
+                d->pat ^= 1u;
+                if (prev_should) {
+                    d->dits--, d->dit_sum -= d->prev;
+                    d->dahs++, d->dah_sum += d->prev;
+                } else {
+                    d->dahs--, d->dah_sum -= d->prev;
+                    d->dits++, d->dit_sum += d->prev;
+                }
+            }
+        }
+    }
     dah = ms >= (d->dit_avg + d->dah_avg) / 2u;
     if (dah) {
         d->dah_avg = (3u * d->dah_avg + ms) / 4u;
@@ -287,6 +325,7 @@ void mo_dec_mark(mo_dec_t *d, uint32_t ms)
     if (d->dah_avg < 2u * d->dit_avg)
         d->dah_avg = 2u * d->dit_avg;
     d->marks++;
+    d->prev = ms;
     if (d->pat >= 0x80u || !d->pat)
         d->pat = 0;                      /* longer than any character: unknown at its end */
     else
@@ -296,7 +335,9 @@ void mo_dec_mark(mo_dec_t *d, uint32_t ms)
 static char mo_dec_end(mo_dec_t *d)
 {
     char c = d->pat ? mo_char(d->pat) : 0;
+    d->last_pat = d->pat;
     d->pat = 1;
+    d->prev = 0;
     d->word = 1;
     return c ? c : MO_UNKNOWN;
 }
@@ -325,6 +366,10 @@ uint32_t mo_dec_gap(mo_dec_t *d, uint32_t ms, char *out)
     char c;
     if (ms >= 2u * u && ms < mo_dec_word(d))   /* a gap between characters: learn the spacing (Farnsworth, a hand) */
         d->cgap = (3u * d->cgap + ms) / 4u;
+    else if (ms < 2u * u && d->pat > 1u) {      /* inside a character */
+        d->egap_sum += ms;
+        d->egap_n++;
+    }
     while (n < 2u && (c = mo_dec_idle(d, ms)) != 0)
         out[n++] = c;
     return n;
@@ -337,6 +382,14 @@ uint32_t mo_dec_wpm(const mo_dec_t *d)
 }
 
 uint8_t mo_dec_pending(const mo_dec_t *d) { return d->pat; }
+
+uint32_t mo_dec_gap10(const mo_dec_t *d)
+{
+    uint32_t dit = d->dits ? d->dit_sum / d->dits : d->dit_avg;
+    if (!d->egap_n || !dit)
+        return 0;
+    return (d->egap_sum / d->egap_n * 10u + dit / 2u) / dit;
+}
 
 uint32_t mo_dec_ratio10(const mo_dec_t *d)
 {

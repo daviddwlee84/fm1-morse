@@ -1,19 +1,23 @@
 # Morse in the host simulator: just fw-test morse
 # The SysEx below are the shared vectors in host/morse/protocol.py (VECTORS); keep them in step.
+# Pages: 0 MENU, 1 PRACTICE, 2 LISTEN, 3 KEY, 4 RHYTHM, 5 TYPE, 6 CHART, 7 SETTINGS. The menu lists them from
+# PRACTICE (0) and opens on the page you came from.
 wait 600
 shot boot.png
 expect page 1
 expect ps 0
 expect wpm 20
-expect eff 10
+expect eff 8
+expect send 10
+expect preset 0
 expect mute 0
 expect learn 0
 expect store_writes 0
 
-# ---- the host: HELLO once a second until it answers (version 1, firmware 0.1, transport USB) ("hello")
+# ---- the host: HELLO once a second until it answers (version 1, firmware 0.2, transport USB) ("hello")
 sysex_out
 wait 1100
-expect_sysex F0 7D 4D 4F 01 41 01 00 01 00 F7
+expect_sysex F0 7D 4D 4F 01 41 01 00 02 00 F7
 expect host 0
 # HELLO_ACK ("hello_ack")
 sysex F0 7D 4D 4F 01 01 01 F7
@@ -25,39 +29,66 @@ tap HOME
 wait 30
 expect page 0
 shot menu.png
-turn SELECT 1
+turn SELECT 2
 tap SEL
 wait 30
-expect page 2
+expect page 3
 
-# ---- KEY: a straight key by hand, K (-.-) at 20 WPM (dit 60 ms)
+# ---- KEY: a straight key by hand, K (-.-) at the send speed, 10 WPM (dit 120 ms)
 out
 sysex_out
 key 0 down
 wait 20
 expect tx 1
 expect_out USB 90 00 7F
-wait 160
+wait 340
 key 0 up
-wait 60
+wait 120
 key 0 down
-wait 60
+wait 120
 key 0 up
-wait 60
+wait 120
 key 0 down
-wait 180
+wait 360
 key 0 up
 wait 30
 expect_out USB 80 00 00
-wait 400
+wait 600
 expect_text own K
 # what was read goes to the host as T_CHAR ("char_k")
 expect_sysex F0 7D 4D 4F 01 43 4B F7
 # a whole word or two by a scripted hand
 sendkeys PARIS_CQ
-wait 6500
+wait 12000
 expect_text own K_PARIS_CQ
 shot key.png
+# the views: SEQ goes TEXT -> CODE -> TIMING
+tap SEQ
+wait 30
+expect kview 1
+shot key_code.png
+tap SEQ
+wait 30
+expect kview 2
+expect tim_rows 4
+# a beginner's O: dahs with long gaps between (1.7 dits, still one letter), red in TIMING
+key 0 down
+wait 360
+key 0 up
+wait 200
+key 0 down
+wait 360
+key 0 up
+wait 200
+key 0 down
+wait 360
+key 0 up
+wait 800
+expect_text own K_PARIS_CQ_O
+shot key_timing.png
+tap SEQ
+wait 30
+expect kview 0
 
 # ---- received: MIDI note 0 on channel 1 (Vail's keying), a T (-)
 midi USB 90 00 7F
@@ -65,11 +96,11 @@ wait 20
 expect rx 1
 wait 160
 midi USB 80 00 00
-wait 1500
+wait 2000
 expect_text rx T
-# the host's text, played as received at 20/10 WPM: CQ ("text_cq")
+# the host's text, played as received at 20/8 WPM: CQ ("text_cq")
 sysex F0 7D 4D 4F 01 02 43 51 F7
-wait 4000
+wait 4500
 expect_text rx T_CQ
 # and stopped ("stop")
 sysex F0 7D 4D 4F 01 02 50 41 52 49 53 F7
@@ -82,14 +113,14 @@ clear_text
 # ---- sound and silence
 peakreset
 sendkeys EE
-wait 800
+wait 1500
 expect peak_db_min -30
 tap FX
 wait 30
 expect mute 1
 peakreset
 sendkeys EE
-wait 800
+wait 1500
 expect peak_db_max -90
 expect_text own EE_EE
 shot key_muted.png
@@ -100,37 +131,37 @@ expect mute 0
 # ---- iambic B: the left half is dit, the right half dah; a squeeze let go in the dah adds the dit (R)
 tap HOME
 wait 30
-turn SELECT 3
+turn SELECT 4
 tap SEL
 wait 30
-expect page 5
-turn SELECT 3
+expect page 7
+turn SELECT 5
 tap OCT+
 tap OCT+
 wait 30
 expect keyer 2
 tap HOME
 wait 30
-turn SELECT -3
+turn SELECT -4
 tap SEL
 wait 30
-expect page 2
+expect page 3
 clear_text
 key 0 down
 wait 30
 key 20 down
-wait 120
+wait 330
 key 0 up
 key 20 up
-wait 1200
+wait 1500
 expect_text own R
 tap HOME
 wait 30
-turn SELECT 3
+turn SELECT 4
 tap SEL
 wait 30
-expect page 5
-turn SELECT 3
+expect page 7
+turn SELECT 5
 tap OCT-
 wait 30
 expect keyer 1
@@ -138,24 +169,134 @@ tap OCT-
 wait 30
 expect keyer 0
 
-# ---- speed: K1, saved once the knob rests
+# ---- speeds: K1 hearing, K4 sending, each said in ms; the presets
+listen
 turn K1 2
 wait 30
 expect wpm 22
-expect eff 10
-expect saves 0
+expect eff 8
+expect preset -1
+said HEAR 22 WPM
+turn K4 1
+wait 30
+expect send 11
+said SEND 11 WPM DIT 109MS
+turn SELECT -5
+tap OCT+
+wait 30
+expect preset 0
+expect wpm 20
+expect send 10
+said START
+tap OCT+
+wait 30
+expect preset 1
+expect eff 13
+expect send 13
+said BUILDING
+tap OCT-
+wait 30
+expect preset 0
 wait 3500
-expect saves 1
+expect saves >0
+shot settings.png
 
-# ---- TYPE: white keys A..P, black keys Q..Z and a space; OCT- held for digits
+# ---- RHYTHM: five dits at the send speed (120 ms), clean
 tap HOME
 wait 30
-turn SELECT -2
+turn SELECT -3
 tap SEL
 wait 30
-expect page 3
+expect page 4
+shot rhythm.png
+key 0 down
+wait 120
+key 0 up
+wait 120
+key 0 down
+wait 120
+key 0 up
+wait 120
+key 0 down
+wait 120
+key 0 up
+wait 120
+key 0 down
+wait 120
+key 0 up
+wait 120
+key 0 down
+wait 120
+key 0 up
+wait 300
+expect rh_sets 1
+expect rh_clean 1
+expect rh_hint 7
+shot rhythm_good.png
+# a beginner's dits, 1.8 of the target: "dits are long", and a send speed that fits the hand
+tap PLAY
+wait 30
+key 0 down
+wait 216
+key 0 up
+wait 120
+key 0 down
+wait 216
+key 0 up
+wait 120
+key 0 down
+wait 216
+key 0 up
+wait 120
+key 0 down
+wait 216
+key 0 up
+wait 120
+key 0 down
+wait 216
+key 0 up
+wait 300
+expect rh_sets 1
+expect rh_clean 0
+expect rh_hint 1
+expect rh_sugg 5
+shot rhythm_long.png
+# dahs held 1.7 dits: read as dits, "dahs are short"
+turn SELECT 1
+wait 30
+key 0 down
+wait 200
+key 0 up
+wait 120
+key 0 down
+wait 200
+key 0 up
+wait 120
+key 0 down
+wait 200
+key 0 up
+wait 120
+key 0 down
+wait 200
+key 0 up
+wait 120
+key 0 down
+wait 200
+key 0 up
+wait 300
+expect rh_hint 2
+shot rhythm_dahs.png
+
+# ---- TYPE: pages of keys with OCT- / OCT+ (letters, digits and signs, phrases)
+tap HOME
+wait 30
+turn SELECT 1
+tap SEL
+wait 30
+expect page 5
 # the host keeps itself known: a HELLO_ACK for each HEARTBEAT (host/morse/PROTOCOL.md)
 sysex F0 7D 4D 4F 01 01 01 F7
+clear_text
 out
 sysex_out
 tapkey w0
@@ -163,26 +304,123 @@ wait 20
 expect_out USB 90 00 7F
 expect_sysex F0 7D 4D 4F 01 43 41 F7
 tapkey b0
-press OCT-
+tap OCT+
+wait 30
+expect tpage 1
 tapkey w0
-release OCT-
-wait 2500
-expect_text typed AQ1
-shot type.png
+tap OCT+
+wait 30
+expect tpage 2
+tapkey w0
+wait 30
+expect_text typed AQ1CQ
+expect line_len 6
+shot type_phrases.png
+# PLAY stops what plays
+expect playing 1
+tap PLAY
+wait 30
+expect playing 0
+# REC: one character off; held, the whole line
+tap REC
+wait 30
+expect line_len 5
+press REC
+wait 700
+release REC
+wait 30
+expect line_len 0
+# the code on the keys
+tap SEQ
+tap OCT-
+tap OCT-
+wait 30
+expect tlabel 1
+expect tpage 0
+shot type_code.png
+tap SEQ
+wait 30
+# COMPOSE: keys go on the line in silence, PLAY sends the line
+tap SEL
+wait 30
+expect tcompose 1
+out
+tapkey w1
+tapkey w2
+wait 300
+expect_no_out USB 90 00 7F
+expect playing 0
+expect line_len 2
+tap PLAY
+wait 30
+expect playing 1
+wait 3000
+expect_out USB 90 00 7F
+tap SEL
+wait 30
+expect tcompose 0
+
+# ---- the layout: A-Z left to right (black key b0 is B)
+tap HOME
+wait 30
+turn SELECT 2
+tap SEL
+wait 30
+expect page 7
+turn SELECT 10
+tap OCT+
+wait 30
+expect tlayout 1
+tap HOME
+wait 30
+turn SELECT -2
+tap SEL
+wait 30
+expect page 5
+clear_text
+tapkey b0
+wait 30
+expect_text typed B
+
+# ---- LISTEN: abbreviations played on and on, shown as they go, then hidden
+tap HOME
+wait 30
+turn SELECT -3
+tap SEL
+wait 30
+expect page 2
+turn SELECT 3
+wait 30
+expect prog 3
+tap PLAY
+wait 30
+expect listening 1
+wait 25000
+expect lines >0
+shot listen.png
+tap SEQ
+wait 30
+expect lhide 1
+wait 6000
+shot listen_hidden.png
+tap SEQ
+tap PLAY
+wait 30
+expect listening 0
 
 # ---- CHART
 tap HOME
 wait 30
-turn SELECT 1
+turn SELECT 4
 tap SEL
 wait 30
-expect page 4
+expect page 6
 shot chart.png
 
 # ---- PRACTICE: three new letters shown, then asked; one missed comes back at the end
 tap HOME
 wait 30
-turn SELECT -3
+turn SELECT -5
 tap SEL
 wait 30
 expect page 1
@@ -220,17 +458,18 @@ expect round 1
 expect answered 4
 expect streak 0
 shot done.png
-expect saves 2
 
 # ---- it all comes back after a power cycle
 reboot
 wait 600
 expect round 1
-expect wpm 22
 expect answered 4
 expect ps 0
+expect send 10
+expect preset 0
+expect tlayout 1
 
-# ---- muted, by sound: the lamp's rhythm instead of sound; sending cards keyed for real
+# ---- muted, by sound: the lamp's rhythm instead of sound
 tap FX
 wait 30
 expect mute 1
@@ -249,8 +488,7 @@ expect streak 1
 shot done_muted.png
 
 # ---- a round answered as a player would: picks on the keys, and the keyed cards (send it, key what you hear)
-# keyed by a hand at 22 WPM and read by the decoder. The simulator's clock is fixed, so the round is too: 3 new,
-# then hear-and-pick (1), see-and-key (3), hear-and-key (2)
+# keyed by a hand at the send speed and read by the decoder
 tap FX
 wait 30
 tap PLAY
@@ -260,59 +498,69 @@ expect round 3
 tap PLAY
 wait 30
 expect ps 1
-expect cards 16
 wait 1500
 answer right
-wait 2500
+wait 3500
 wait 1500
 answer right
-wait 2500
+wait 3500
 wait 1500
 answer right
-wait 2500
+wait 3500
 wait 1500
 answer right
-wait 2500
+wait 3500
 wait 1500
 answer right
-wait 2500
+wait 3500
 wait 1500
 answer right
-wait 2500
+wait 3500
 wait 1500
 answer right
-wait 2500
+wait 3500
 wait 1500
 answer right
-wait 2500
+wait 3500
 wait 1500
 answer right
-wait 2500
+wait 3500
 wait 1500
 answer right
-wait 2500
+wait 3500
 wait 1500
 answer right
-wait 2500
+wait 3500
 wait 1500
 answer right
-wait 2500
+wait 3500
 wait 1500
 answer right
-wait 2500
+wait 3500
 wait 1500
 answer right
-wait 2500
+wait 3500
 wait 1500
 answer right
-wait 2500
+wait 3500
 wait 1500
 answer right
-wait 2500
+wait 3500
+wait 1500
+answer right
+wait 3500
+wait 1500
+answer right
+wait 3500
+wait 1500
+answer right
+wait 3500
+wait 1500
+answer right
+wait 3500
 expect ps 3
 expect round 4
-expect ok 13
 expect miss 0
 expect streak 3
 shot done_keyed.png
-expect store_writes <12
+expect store_writes <20

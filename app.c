@@ -2,17 +2,18 @@
 /* Morse: see app.h. Part of fm1-base's unity build, after the platform (gfx.c, announce.c in scope).
  * The 1 kHz tick does what needs the millisecond: the key and the keyer, the two players, MIDI in and out, the
  * sidetone's gates; it leaves key-down / key-up events with their times in a ring. The main loop decodes them, runs
- * the pages and the flash cards, talks to the host and draws.
+ * the pages (flash cards, listening, rhythm drills), talks to the host and draws.
  * Protocol with the host: host/morse/PROTOCOL.md (the numbers below match host/morse/protocol.py). */
 #include "fastmath.h"
 #include "hostlink.c"
 #include "ledfx.c"
 #include "morse.c"
 #include "learn.c"
+#include "content.c"
 #include "tone.c"
 
 #define FW_MAJOR 0u
-#define FW_MINOR 1u
+#define FW_MINOR 2u
 
 /* ---------------------------------------------------------------- protocol --- */
 #define MO_VER 1u
@@ -23,7 +24,8 @@ enum { T_HELLO = 0x41, T_HEARTBEAT, T_CHAR };
 #define MIDI_KEY_OFF (0x08u | 0x80u << 8 | 0x00u << 16 | 0x00u << 24)
 
 /* the debounce keeps a key down ~8.8 ms after it opens and sees it ~1.6 ms after it closes: a straight key's marks
- * read ~7 ms long on the FM-1 (fm1-base bsp/boards/fm1/fm1_input.h); the host simulator has no debounce */
+ * read ~7 ms long on the FM-1 (fm1-base bsp/boards/fm1/fm1_input.h; fm1-emu shows +3 / +10 ms); the host simulator
+ * has no debounce */
 #ifdef PLAT_HOST
 #define KEY_BIAS_MS 0u
 #else
@@ -32,19 +34,25 @@ enum { T_HELLO = 0x41, T_HEARTBEAT, T_CHAR };
 
 /* ---------------------------------------------------------------- settings --- */
 #define REC_MAGIC 0x4D4F5231u            /* "MOR1"; another magic, or a record that does not make sense: defaults */
-#define REC_VER 1u
+#define REC_VER 1u                       /* 0.2 kept 0.1's layout: its spare bytes became look, send, prog */
 enum { LM_SOUND, LM_VISUAL };            /* how to learn: by sound (recommended), by sight */
+enum { KV_TEXT, KV_CODE, KV_TIMING, KV_N };   /* the KEY page's view */
+enum { TL_ALPHA, TL_PIANO, TL_KOCH, TL_N };   /* the TYPE page's letters on the keys */
 typedef struct {
-    uint8_t wpm;                         /* character speed 5..40 */
-    uint8_t eff;                         /* effective speed (Farnsworth) 5..wpm */
+    uint8_t wpm;                         /* hearing: character speed 5..40 */
+    uint8_t eff;                         /* hearing: effective speed (Farnsworth) 5..wpm */
     uint8_t keyer;                       /* MO_STRAIGHT, MO_IAMBIC_A, MO_IAMBIC_B */
     uint8_t swap;                        /* paddles: 0 left half dit, 1 left half dah */
     uint8_t mute;
     uint8_t cards;                       /* per round 10..30 */
     uint8_t learn;                       /* LM_* */
-    uint8_t rsv;
+    uint8_t look;                        /* bits 0-1 KEY's view (KV_*), bit 2 TYPE's keys show the code, bits 3-4
+                                          * TYPE's layout (TL_*), bit 5 LISTEN hides the text, bit 6 TYPE composes
+                                          * (a line sent with PLAY) instead of sending each key */
     uint16_t pitch;                      /* Hz 300..1200 */
-    uint16_t rsv2;
+    uint8_t send;                        /* sending: the keyer's speed and where the decoder starts, 5..40 (0 in
+                                          * a 0.1 record: the default) */
+    uint8_t prog;                        /* LISTEN's program (LP_*) */
 } set_t;
 typedef struct {
     uint32_t magic;
@@ -54,26 +62,39 @@ typedef struct {
 } rec_t;
 static rec_t rec;
 #define SET (rec.set)
+#define SEND_DEFAULT 10u                 /* a beginner's hand: a 120 ms dit (the START preset) */
 
-static void set_defaults(void)
+static uint32_t kview(void) { return SET.look & 3u; }
+static uint32_t tlabel(void) { return SET.look >> 2 & 1u; }
+static uint32_t tlayout(void) { return SET.look >> 3 & 3u; }
+static uint32_t lhide(void) { return SET.look >> 5 & 1u; }
+static uint32_t tcompose(void) { return SET.look >> 6 & 1u; }
+static void look_set(uint32_t shift, uint32_t mask, uint32_t v)
 {
-    SET.wpm = 20;                        /* Koch: characters at full speed from the start, */
-    SET.eff = 10;                        /* the gaps stretched (Farnsworth) */
+    SET.look = (uint8_t)((SET.look & ~(mask << shift)) | (v & mask) << shift);
+}
+
+static void set_defaults(void)          /* the START preset: Koch's characters at 20, gaps stretched to 8 (Farnsworth) */
+{
+    SET.wpm = 20;
+    SET.eff = 8;
     SET.keyer = MO_STRAIGHT;
     SET.swap = 0;
     SET.mute = 0;
     SET.cards = 20;
     SET.learn = LM_SOUND;
-    SET.rsv = 0;
+    SET.look = 0;
     SET.pitch = 600;
-    SET.rsv2 = 0;
+    SET.send = SEND_DEFAULT;
+    SET.prog = LP_KOCH;
 }
 
 static int set_valid(const set_t *s)
 {
     return s->wpm >= 5u && s->wpm <= 40u && s->eff >= 5u && s->eff <= s->wpm && s->keyer < MO_NKEYER && s->swap <= 1u
            && s->mute <= 1u && s->cards >= 10u && s->cards <= 30u && s->learn <= LM_VISUAL && s->pitch >= 300u
-           && s->pitch <= 1200u;
+           && s->pitch <= 1200u && (s->look & 3u) < KV_N && (s->look >> 3 & 3u) < TL_N && !(s->look >> 7)
+           && s->send >= 5u && s->send <= 40u && s->prog < LP_N;
 }
 
 static uint32_t saves;                   /* records written since boot */
@@ -91,11 +112,11 @@ static void rec_save(void)
 
 /* ------------------------------------------------------------------- state --- */
 enum { SRC_OWN, SRC_RX, SRC_N };         /* what this FM-1 sends; what it receives (MIDI in, the host's text) */
-enum { PG_MENU, PG_PRACTICE, PG_KEY, PG_TYPE, PG_CHART, PG_SET, PG_N };
+enum { PG_MENU, PG_PRACTICE, PG_LISTEN, PG_KEY, PG_RHYTHM, PG_TYPE, PG_CHART, PG_SET, PG_N };
 enum { PS_START, PS_CARD, PS_RESULT, PS_DONE };
 
-/* the tick's: the key, the keyer, two players (ptx: this FM-1's own playing, prompts and typed letters; prx: the
- * host's text, as received), and what they leave for the main loop */
+/* the tick's: the key, the keyer, two players (ptx: this FM-1's own playing, prompts, typed letters and listening;
+ * prx: the host's text, as received), and what they leave for the main loop */
 static mo_keyer_t keyer;
 static mo_player_t ptx, prx;
 static volatile uint8_t key_input;       /* the keys are the Morse key now */
@@ -128,10 +149,26 @@ static struct {
 static struct {
     char c[TG_N];
     uint8_t who[TG_N];
+    uint8_t pat[TG_N];                   /* the elements read for it (a code; 0 none or too long) */
     uint32_t n;
 } grid;                                  /* the KEY page's text, own and received in their colours */
 #define TXT_N 96u
 static char txt[3][TXT_N + 1];           /* own decoded, received decoded, typed (the simulator's expect_text) */
+
+/* the KEY page's TIMING view: each letter's marks and the gaps inside it, as keyed */
+#define TR_N 4u
+#define TR_EL 7u
+typedef struct {
+    char c;
+    uint8_t n, dah;                      /* elements, and which were read as dahs (bit i) */
+    uint16_t mark[TR_EL], gap[TR_EL];    /* ms; gap[i] the one before element i (gap[0] 0) */
+} trow_t;
+static struct {
+    trow_t row[TR_N], live;
+    uint8_t head, count;
+    uint16_t next_gap;                   /* the gap before the next mark, if it is inside a letter */
+    uint16_t next_gap_rh;                /* the gap before the next mark, whatever it was (RHYTHM) */
+} tim;
 
 static struct {
     uint8_t page, back, sel;             /* sel: the menu's / the settings' cursor */
@@ -140,8 +177,10 @@ static struct {
     uint32_t keys, btn;
     char msg[2][24];
     uint32_t msg_until;
-    uint8_t shift;                       /* TYPE: OCT- held */
+    uint8_t tpage;                       /* TYPE: 0 letters, 1 digits and signs, 2 phrases */
     char line[TG_COLS * 2u + 1u];        /* TYPE: the line typed */
+    const char *gloss;                   /* TYPE: what the last phrase means */
+    uint32_t rec_t;                      /* TYPE: REC went down at (0: up, or its hold already cleared the line) */
     char last;                           /* KEY: the last character read */
     uint8_t host_was, lamp_was, pat_was;
 } ui;
@@ -163,14 +202,20 @@ static struct {
 static const uint8_t WHITE[16] = PLAT_WHITE_KEYS;
 static const uint8_t BLACK[11] = PLAT_BLACK_KEYS;
 static const uint8_t CHOICE_KEY[4] = {11, 12, 14, 16};   /* E4 F4 G4 A4: the four answers */
-static const char TYPE_W[2][17] = {"ABCDEFGHIJKLMNOP", "1234567890.,?/=+"};
-static const char TYPE_B[2][12] = {"QRSTUVWXYZ ", "-()'\":;@!&$"};
 
 static void zero(void *p, uint32_t n)
 {
     uint8_t *b = (uint8_t *)p;
     while (n--)
         *b++ = 0;
+}
+
+static uint32_t slen(const char *s)
+{
+    uint32_t n = 0;
+    while (s[n])
+        n++;
+    return n;
 }
 
 static void text_cat(char *d, const char *s)
@@ -204,6 +249,15 @@ static void int_cat(char *b, int32_t v)
     int_text(v, b);
 }
 
+static void tenths_cat(char *b, uint32_t v)   /* 13 -> "1.3" */
+{
+    char t[2] = {0, 0};
+    int_cat(b, (int32_t)(v / 10u));
+    text_cat(b, ".");
+    t[0] = (char)('0' + v % 10u);
+    text_cat(b, t);
+}
+
 static void note_name(uint32_t key, char *b)   /* key 0 is F3 */
 {
     static const char *const N[] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
@@ -211,6 +265,11 @@ static void note_name(uint32_t key, char *b)   /* key 0 is F3 */
     b[0] = 0;
     text_cat(b, N[note % 12u]);
     int_cat(b, (int32_t)(note / 12u) - 1);
+}
+
+static uint32_t wrap(uint32_t v, int32_t d, uint32_t n)
+{
+    return (uint32_t)(((int32_t)v + d % (int32_t)n + (int32_t)n) % (int32_t)n);
 }
 
 void app_say(const char *a, const char *b)
@@ -223,7 +282,7 @@ void app_say(const char *a, const char *b)
     for (i = 0; i < 23u && b && b[i]; i++)
         ui.msg[1][i] = b[i];
     ui.msg[1][i] = 0;
-    ui.msg_until = plat_ms() + 1500u;
+    ui.msg_until = plat_ms() + 2000u;
     ui.redraw |= R_HEAD;
     if (ann_on()) {
         t[0] = 0;
@@ -239,21 +298,31 @@ void app_say(const char *a, const char *b)
 static int visual(void) { return SET.learn == LM_VISUAL; }
 
 /* ------------------------------------------------------------- the timing --- */
-/* the speeds into the keyer, the players and the decoders (main loop; the tick locked out) */
+/* the speeds into the keyer, the players and the decoders (main loop; the tick locked out). Hearing (what this
+ * FM-1 plays) and sending (what you key) have their own: Koch wants the characters heard fast, a beginner's hand is
+ * slow */
+static struct {
+    uint8_t wpm, eff, send;
+} applied;                               /* the speeds the decoders were started at */
+
 static void timing_apply(void)
 {
-    uint32_t dit = mo_dit_ms(SET.wpm), gap = mo_gap_ms(SET.wpm, SET.eff), f = plat_lock(), s;
+    uint32_t dit = mo_dit_ms(SET.wpm), gap = mo_gap_ms(SET.wpm, SET.eff), sdit = mo_dit_ms(SET.send);
+    uint32_t f = plat_lock();
     keyer.mode = SET.keyer;
-    keyer.dit = dit;
+    keyer.dit = sdit;
     ptx.dit = prx.dit = dit;
     ptx.gap = prx.gap = gap;
 #ifdef PLAT_HOST
-    host_hand.dit = dit;
-    host_hand.gap = dit;                 /* a hand keys without Farnsworth */
+    host_hand.dit = sdit;
+    host_hand.gap = sdit;                /* a hand keys without Farnsworth */
 #endif
     plat_unlock(f);
-    for (s = 0; s < SRC_N; s++)
-        mo_dec_init(&dsrc[s].dec, dit, s == SRC_OWN ? dit : gap);   /* a hand keys without Farnsworth */
+    if (applied.send != SET.send)        /* a new speed starts the decoder there; muting or a pitch keeps its state */
+        mo_dec_init(&dsrc[SRC_OWN].dec, sdit, sdit);
+    if (applied.wpm != SET.wpm || applied.eff != SET.eff)
+        mo_dec_init(&dsrc[SRC_RX].dec, dit, gap);
+    applied.wpm = SET.wpm, applied.eff = SET.eff, applied.send = SET.send;
     tone_pitch(TONE_TX, (float)SET.pitch);
     tone_pitch(TONE_RX, (float)SET.pitch * 1.26f);   /* received a major third up */
     tone_mute(SET.mute);
@@ -262,6 +331,12 @@ static void timing_apply(void)
 static void set_changed(void)
 {
     timing_apply();
+    dirty_at = plat_ms() | 1u;
+    ui.redraw |= R_ALL;
+}
+
+static void look_changed(void)          /* a view changed: saved like a setting, nothing retimed */
+{
     dirty_at = plat_ms() | 1u;
     ui.redraw |= R_ALL;
 }
@@ -293,6 +368,22 @@ static int playing(const mo_player_t *p)
     int b = mo_player_busy(p);
     plat_unlock(f);
     return b;
+}
+
+static uint32_t queued(const mo_player_t *p)   /* characters waiting */
+{
+    uint32_t f = plat_lock(), n = (p->head + MO_PLAY_Q - p->tail) % MO_PLAY_Q;
+    plat_unlock(f);
+    return n;
+}
+
+static int took_start(mo_player_t *p)    /* a character began playing since the last look (once) */
+{
+    uint32_t f = plat_lock();
+    int s = p->started;
+    p->started = 0;
+    plat_unlock(f);
+    return s;
 }
 
 /* --------------------------------------------------------------- the tick --- */
@@ -362,9 +453,7 @@ void app_tick(void)
 static void txt_add(uint32_t which, char c)
 {
     char *t = txt[which];
-    uint32_t n = 0, i;
-    while (t[n])
-        n++;
+    uint32_t n = slen(t), i;
     if (n >= TXT_N) {
         for (i = 0; i + 1u < TXT_N; i++)
             t[i] = t[i + 1u];
@@ -374,7 +463,7 @@ static void txt_add(uint32_t which, char c)
     t[n + 1u] = 0;
 }
 
-static void grid_add(char c, uint32_t who)
+static void grid_add(char c, uint32_t who, uint8_t pat)
 {
     uint32_t i;
     if (c == ' ' && (grid.n % TG_COLS == 0u || (grid.n && grid.c[grid.n - 1u] == ' ')))
@@ -383,38 +472,73 @@ static void grid_add(char c, uint32_t who)
         for (i = 0; i < TG_N - TG_COLS; i++) {
             grid.c[i] = grid.c[i + TG_COLS];
             grid.who[i] = grid.who[i + TG_COLS];
+            grid.pat[i] = grid.pat[i + TG_COLS];
         }
         grid.n -= TG_COLS;
     }
     grid.c[grid.n] = c;
     grid.who[grid.n] = (uint8_t)who;
+    grid.pat[grid.n] = c == ' ' ? 0u : pat;
     grid.n++;
 }
 
-static void send_char(char c)            /* to the host, which may type it on the computer */
+static void send_text(const char *s)     /* to the host (the first HOSTLINK_MAX characters), which may type it */
 {
-    uint8_t p[1];
-    if (!hl_host(&link, plat_ms()) || c < 0x20 || c > 0x7E)
+    uint8_t p[HOSTLINK_MAX];
+    uint32_t n = 0;
+    if (!hl_host(&link, plat_ms()))
         return;
-    p[0] = (uint8_t)c;
-    hl_send(&link, T_CHAR, p, 1);
+    for (; *s && n < HOSTLINK_MAX; s++)
+        if (*s >= 0x20 && *s < 0x7F)
+            p[n++] = (uint8_t)*s;
+    if (n)
+        hl_send(&link, T_CHAR, p, n);
+}
+
+static void send_char(char c)
+{
+    char s[2] = {c, 0};
+    send_text(s);
+}
+
+static void tim_push(char c)             /* a letter read: its row for the TIMING view */
+{
+    uint8_t pat = dsrc[SRC_OWN].dec.last_pat;
+    trow_t *r = &tim.row[tim.head];
+    uint32_t i;
+    if (!tim.live.n)
+        return;
+    *r = tim.live;
+    r->c = c;
+    r->dah = 0;
+    for (i = 0; i < r->n; i++)           /* as the decoder read them in the end (it may have read one again) */
+        if (pat > 1u && mo_len(pat) == r->n ? mo_elem(pat, i) : mo_dec_is_dah(&dsrc[SRC_OWN].dec, r->mark[i]))
+            r->dah |= (uint8_t)(1u << i);
+    tim.head = (uint8_t)((tim.head + 1u) % TR_N);
+    if (tim.count < TR_N)
+        tim.count++;
+    tim.live.n = 0;
 }
 
 static void practice_keyed(char c);
+static void rhythm_mark(uint32_t mark, uint32_t gap);
 
 static void emit(uint32_t src, char c)
 {
+    uint8_t pat = c == ' ' ? 0u : dsrc[src].dec.last_pat;
     if (src == SRC_RX) {
         txt_add(1, c);
         if (ui.page == PG_KEY) {
-            grid_add(c, SRC_RX);
+            grid_add(c, SRC_RX, pat);
             ui.redraw |= R_MAIN;
         }
         return;
     }
     txt_add(0, c);
+    if (c != ' ')
+        tim_push(c);
     if (ui.page == PG_KEY) {
-        grid_add(c, SRC_OWN);
+        grid_add(c, SRC_OWN, pat);
         if (c != ' ')
             ui.last = c;
         send_char(c);
@@ -429,7 +553,7 @@ static void read_events(void)            /* the tick's events into the decoders 
     char out[2];
     for (;;) {
         ev_t e;
-        uint32_t n = 0, i;
+        uint32_t n = 0, i, bias, gap = 0;
         f = plat_lock();
         if (ev_r == ev_w) {
             plat_unlock(f);
@@ -440,24 +564,39 @@ static void read_events(void)            /* the tick's events into the decoders 
         plat_unlock(f);
         if (e.src >= SRC_N)
             continue;
-        {
-            uint32_t bias = e.src == SRC_OWN && SET.keyer == MO_STRAIGHT ? KEY_BIAS_MS : 0u;
-            if (e.down) {
-                if (dsrc[e.src].seen && !dsrc[e.src].down)
-                    n = mo_dec_gap(&dsrc[e.src].dec, e.t - dsrc[e.src].t_up + bias, out);
-                dsrc[e.src].t_down = e.t;
-            } else if (dsrc[e.src].down) {
-                uint32_t mark = e.t - dsrc[e.src].t_down;
-                mo_dec_mark(&dsrc[e.src].dec, mark > bias ? mark - bias : mark);
-                dsrc[e.src].t_up = e.t;
+        bias = e.src == SRC_OWN && SET.keyer == MO_STRAIGHT ? KEY_BIAS_MS : 0u;
+        if (e.down) {
+            if (dsrc[e.src].seen && !dsrc[e.src].down) {
+                gap = e.t - dsrc[e.src].t_up + bias;
+                n = mo_dec_gap(&dsrc[e.src].dec, gap, out);
+            }
+            dsrc[e.src].t_down = e.t;
+        } else if (dsrc[e.src].down) {
+            uint32_t mark = e.t - dsrc[e.src].t_down;
+            mark = mark > bias ? mark - bias : mark;
+            mo_dec_mark(&dsrc[e.src].dec, mark);
+            dsrc[e.src].t_up = e.t;
+            if (e.src == SRC_OWN) {
+                if (tim.live.n < TR_EL) {
+                    tim.live.mark[tim.live.n] = (uint16_t)(mark > 0xFFFFu ? 0xFFFFu : mark);
+                    tim.live.gap[tim.live.n] = tim.live.n ? tim.next_gap : 0u;
+                    tim.live.n++;
+                }
+                if (ui.page == PG_RHYTHM)
+                    rhythm_mark(mark, tim.next_gap_rh);
             }
         }
         dsrc[e.src].down = e.down;
         dsrc[e.src].seen = 1;
         for (i = 0; i < n; i++)
             emit(e.src, out[i]);
-        if (e.src == SRC_OWN && visual())   /* the code so far is drawn */
-            ui.redraw |= R_MAIN;
+        if (e.src == SRC_OWN && e.down) {
+            /* the gap just over was inside a letter if the letter is still open after it */
+            tim.next_gap = (uint16_t)(mo_dec_pending(&dsrc[SRC_OWN].dec) != 1u && gap < 0xFFFFu ? gap : 0u);
+            tim.next_gap_rh = (uint16_t)(gap > 0xFFFFu ? 0xFFFFu : gap);
+        }
+        if (e.src == SRC_OWN && (visual() || kview() != KV_TEXT || ui.page == PG_PRACTICE))
+            ui.redraw |= R_MAIN;         /* the code so far is drawn */
     }
     for (s = 0; s < SRC_N; s++)          /* silence ends a character, then a word */
         if (dsrc[s].seen && !dsrc[s].down) {
@@ -481,12 +620,12 @@ static int host_frame(const uint8_t *p, uint32_t n, int transport)
         hl_acked(&link, now, transport);
         ui.redraw |= R_HEAD;
         break;
-    case T_TEXT:                         /* the computer's text, played as received */
+    case T_TEXT:                         /* the computer's text, played as received (<..> a prosign) */
         for (i = 0; i < len; i++) {
             char c = (char)d[i];
             if (c >= 'a' && c <= 'z')
                 c = (char)(c - 32);
-            if (c == ' ' || mo_code(c))
+            if (c == ' ' || c == '<' || c == '>' || mo_code(c))
                 play_char(&prx, c);
         }
         break;
@@ -504,17 +643,23 @@ int app_sysex(const uint8_t *p, uint32_t n) { return host_frame(p, n, HL_USB); }
 /* ------------------------------------------------------------- the pages --- */
 static void inputs_for_page(void)        /* who the keys and MIDI belong to on this page */
 {
-    key_input = ui.page == PG_KEY || (ui.page == PG_PRACTICE && pr.ps == PS_CARD && pr.answer_ok);
+    key_input = ui.page == PG_KEY || ui.page == PG_RHYTHM
+                || (ui.page == PG_PRACTICE && pr.ps == PS_CARD && pr.answer_ok);
     own_midi = ui.page == PG_KEY;
     ptx_midi = ui.page == PG_TYPE;
 }
 
 static void practice_leave(void);
+static void listen_stop(void);
 
 static void set_page(uint32_t p)
 {
     if (ui.page == PG_PRACTICE && p != PG_PRACTICE)
         practice_leave();
+    if (ui.page == PG_LISTEN && p != PG_LISTEN)
+        listen_stop();
+    if (ui.page == PG_TYPE && p != PG_TYPE)
+        play_stop(&ptx);
     if (p != PG_MENU)
         ui.back = (uint8_t)p;
     ui.page = (uint8_t)(p % PG_N);
@@ -529,6 +674,11 @@ static int card_sounds(const ln_card_t *c)   /* its prompt is played (or flashed
 {
     return c->type == CARD_NEW || c->type == CARD_HEAR_CHOOSE || c->type == CARD_HEAR_KEY
            || c->type == CARD_LIGHT_CHOOSE;
+}
+
+static void own_reset(void)              /* the decoder for a keyed answer, at the send speed */
+{
+    mo_dec_init(&dsrc[SRC_OWN].dec, mo_dit_ms(SET.send), mo_dit_ms(SET.send));
 }
 
 static void card_present(void)
@@ -556,7 +706,7 @@ static void card_present(void)
         play(&ptx, s);
     } else if (card_sounds(c))
         play_char(&ptx, ch);
-    mo_dec_init(&dsrc[SRC_OWN].dec, mo_dit_ms(SET.wpm), mo_dit_ms(SET.wpm));
+    own_reset();
     inputs_for_page();
     ui.redraw |= R_ALL;
 }
@@ -628,43 +778,347 @@ static void practice_step(uint32_t now)
     const ln_card_t *c = ln_card(&pr.r);
     if (pr.ps == PS_CARD && c && card_key(c) && !pr.answer_ok && !playing(&ptx)) {
         pr.answer_ok = 1;                /* the prompt has played: now keying answers */
-        mo_dec_init(&dsrc[SRC_OWN].dec, mo_dit_ms(SET.wpm), mo_dit_ms(SET.wpm));
+        own_reset();
         inputs_for_page();
-        ui.redraw |= R_FOOT;
+        ui.redraw |= R_FOOT | R_MAIN;
     }
     if (pr.ps == PS_RESULT && now >= pr.until && !playing(&ptx))
         card_present();
 }
 
+/* ----------------------------------------------------------------- listen --- */
+/* lines from content.c played one after another; the one playing shown as it goes (or hidden: copy it in your
+ * head, it shows once the next one starts) */
+#define LS_N 2u
+static struct {
+    uint8_t on;
+    struct {
+        char t[CT_LINE_MAX + 1];
+        const char *gloss;
+        uint8_t nplay, played;
+    } l[LS_N];
+    uint8_t cur, have;                   /* the line playing; lines generated and not done (1 or 2) */
+    uint8_t feed, pos;                   /* the line being queued, and its next character */
+    char prev[CT_LINE_MAX + 1];          /* the line before, shown whole */
+    const char *prev_gloss;
+    uint32_t count;                      /* lines heard */
+    ct_gen_t gen;
+} ls;
+
+static int playable(char c) { return c != ' ' && c != '<' && c != '>' && mo_code(c); }
+
+static uint32_t playable_n(const char *s)
+{
+    uint32_t n = 0;
+    for (; *s; s++)
+        n += (uint32_t)playable(*s);
+    return n;
+}
+
+static void listen_new(uint32_t i)
+{
+    ct_line(&ls.gen, SET.prog, rec.ln.open, ls.l[i].t, &ls.l[i].gloss);
+    ls.l[i].nplay = (uint8_t)playable_n(ls.l[i].t);
+    ls.l[i].played = 0;
+}
+
+static void listen_stop(void)
+{
+    if (ls.on)
+        play_stop(&ptx);
+    ls.on = 0;
+    ls.have = 0;
+    ui.redraw |= R_MAIN | R_FOOT;
+}
+
+static void listen_start(void)
+{
+    play_stop(&ptx);
+    (void)took_start(&ptx);
+    ct_init(&ls.gen, plat_ms() * 2654435761u + 1u);
+    ls.on = 1;
+    ls.cur = ls.feed = 0;
+    ls.pos = 0;
+    listen_new(0);
+    ls.have = 1;
+    ls.prev[0] = 0;
+    ls.prev_gloss = 0;
+    ui.redraw |= R_MAIN | R_FOOT;
+}
+
+static void listen_step(void)
+{
+    uint32_t guard = 0;
+    if (!ls.on)
+        return;
+    /* keep the player fed, a word at a time, a line ahead */
+    while (queued(&ptx) < 24u && guard++ < 8u) {
+        const char *t = ls.l[ls.feed].t;
+        char w[CT_LINE_MAX + 2];
+        uint32_t n = 0;
+        if (!t[ls.pos]) {                /* this line is queued: the next one, after a pause */
+            if (ls.have >= LS_N)
+                break;
+            ls.feed = (uint8_t)((ls.feed + 1u) % LS_N);
+            listen_new(ls.feed);
+            ls.have++;
+            ls.pos = 0;
+            play(&ptx, "  ");
+            continue;
+        }
+        while (t[ls.pos] && t[ls.pos] != ' ' && n < CT_LINE_MAX)
+            w[n++] = t[ls.pos++];
+        if (t[ls.pos] == ' ')
+            w[n++] = t[ls.pos++];
+        w[n] = 0;
+        play(&ptx, w);
+    }
+    /* what started: the line playing moves on */
+    if (took_start(&ptx)) {
+        uint32_t c = ls.cur;
+        if (ls.l[c].played >= ls.l[c].nplay && ls.have > 1u) {   /* this one is done: the next began */
+            uint32_t i;
+            for (i = 0; i <= CT_LINE_MAX; i++)
+                ls.prev[i] = ls.l[c].t[i];
+            ls.prev_gloss = ls.l[c].gloss;
+            ls.count++;
+            ls.cur = (uint8_t)((c + 1u) % LS_N);
+            ls.have--;
+            c = ls.cur;
+        }
+        ls.l[c].played++;
+        ui.redraw |= R_MAIN;
+    }
+}
+
+/* ----------------------------------------------------------------- rhythm --- */
+/* drills of short and long presses, each measured against the send speed's dit: the box is the target, the bar what
+ * you pressed, and a hint from the last presses */
+static const struct {
+    const char *name, *pat;
+} DRILL[] = {
+    {"DITS", "....."}, {"DAHS", "-----"}, {"DIT DAH", ".-.-.-"}, {"SOS", "...---..."}, {"FREE", ""},
+};
+#define RH_DRILLS (sizeof DRILL / sizeof DRILL[0])
+#define RH_MAX 9u
+#define RH_HIST 16u
+enum { RJ_NONE, RJ_GOOD, RJ_OFF, RJ_WRONG };
+enum { H_START, H_DITS_LONG, H_DAHS_SHORT, H_DAHS_LONG, H_GAPS_LONG, H_UNEVEN, H_DITS_SHORT, H_GOOD };
+static struct {
+    uint8_t drill, n, done;
+    uint16_t sets, good_sets;
+    uint16_t q[RH_MAX], g[RH_MAX];       /* this set: each press and the gap before it, tenths of a dit */
+    uint8_t res[RH_MAX], kind[RH_MAX];   /* RJ_*, and dit 0 / dah 1 (wanted, or as judged in FREE) */
+    uint16_t hq[RH_HIST];                /* the last presses, tenths of a dit, */
+    uint8_t hk[RH_HIST], hn, hi;         /* and dit or dah */
+    uint16_t hg[RH_HIST];                /* the last gaps inside a set */
+    uint8_t gn, gi;
+    uint8_t hint, sugg;                  /* H_*, a send speed to try (0 none) */
+    uint16_t last_ms;
+} rh;
+
+static uint32_t rh_len(void) { return slen(DRILL[rh.drill].pat); }
+
+static void rhythm_reset(void)
+{
+    uint8_t d = rh.drill;
+    zero(&rh, sizeof rh);
+    rh.drill = d;
+}
+
+static void rhythm_hint(void)
+{
+    uint32_t i, dn = 0, an = 0, ds = 0, as = 0, gs = 0, dev = 0, dq, aq, gq, dit = mo_dit_ms(SET.send);
+    for (i = 0; i < rh.hn; i++) {
+        if (rh.hk[i]) {
+            an++;
+            as += rh.hq[i];
+        } else {
+            dn++;
+            ds += rh.hq[i];
+        }
+    }
+    for (i = 0; i < rh.gn; i++)
+        gs += rh.hg[i];
+    dq = dn ? ds / dn : 0;
+    aq = an ? as / an : 0;
+    gq = rh.gn ? gs / rh.gn : 0;
+    for (i = 0; i < rh.hn; i++) {        /* how even: each press's distance from its kind's average, in dit terms */
+        uint32_t avg = rh.hk[i] ? aq : dq, v = rh.hq[i];
+        dev += (v > avg ? v - avg : avg - v) / (rh.hk[i] ? 3u : 1u);
+    }
+    rh.sugg = 0;
+    if (dn >= 3u && dq > 16u) {
+        rh.hint = H_DITS_LONG;
+        rh.sugg = (uint8_t)clamp((int32_t)(1200u * 10u / (dq * dit)), 5, 40);
+    } else if (an >= 3u && aq < 22u)
+        rh.hint = H_DAHS_SHORT;
+    else if (an >= 3u && aq > 45u)
+        rh.hint = H_DAHS_LONG;
+    else if (rh.gn >= 3u && gq > 18u)
+        rh.hint = H_GAPS_LONG;
+    else if (rh.hn >= 5u && dev * 100u > 10u * 30u * rh.hn)   /* off by more than 0.3 dit on average */
+        rh.hint = H_UNEVEN;
+    else if (dn >= 3u && dq < 6u) {
+        rh.hint = H_DITS_SHORT;
+        rh.sugg = (uint8_t)clamp((int32_t)(1200u * 10u / ((dq ? dq : 1u) * dit)), 5, 40);
+    } else if (rh.hn >= 5u)
+        rh.hint = H_GOOD;
+    else
+        rh.hint = H_START;
+}
+
+static void rhythm_mark(uint32_t mark, uint32_t gap)
+{
+    uint32_t dit = mo_dit_ms(SET.send), len = rh_len(), q, g, want, res, i;
+    q = (mark * 10u + dit / 2u) / dit;
+    g = (gap * 10u + dit / 2u) / dit;
+    if (rh.done || (rh.n && g > 50u)) {  /* a set done, or a pause: a new set */
+        rh.n = 0;
+        rh.done = 0;
+    }
+    if (!len && rh.n >= RH_MAX) {        /* FREE: the last ones, scrolling */
+        for (i = 0; i + 1u < RH_MAX; i++) {
+            rh.q[i] = rh.q[i + 1u], rh.g[i] = rh.g[i + 1u];
+            rh.res[i] = rh.res[i + 1u], rh.kind[i] = rh.kind[i + 1u];
+        }
+        rh.n = RH_MAX - 1u;
+    }
+    want = len ? (uint32_t)(DRILL[rh.drill].pat[rh.n] == '-') : q >= 20u;
+    if (!len)
+        res = q >= 16u && q <= 21u ? RJ_OFF : RJ_GOOD;   /* in between: neither */
+    else if (!want)
+        res = q >= 5u && q <= 15u ? RJ_GOOD : q <= 20u ? RJ_OFF : RJ_WRONG;
+    else
+        res = q >= 22u && q <= 40u ? RJ_GOOD : q < 18u ? RJ_WRONG : RJ_OFF;
+    rh.q[rh.n] = (uint16_t)(q > 0xFFFFu ? 0xFFFFu : q);
+    rh.g[rh.n] = (uint16_t)(rh.n ? (g > 0xFFFFu ? 0xFFFFu : g) : 0u);
+    rh.res[rh.n] = (uint8_t)res;
+    rh.kind[rh.n] = (uint8_t)want;
+    if (rh.n && g <= 50u) {
+        rh.hg[rh.gi] = (uint16_t)g;
+        rh.gi = (uint8_t)((rh.gi + 1u) % RH_HIST);
+        if (rh.gn < RH_HIST)
+            rh.gn++;
+    }
+    rh.hq[rh.hi] = (uint16_t)(q > 0xFFFFu ? 0xFFFFu : q);
+    rh.hk[rh.hi] = (uint8_t)want;
+    rh.hi = (uint8_t)((rh.hi + 1u) % RH_HIST);
+    if (rh.hn < RH_HIST)
+        rh.hn++;
+    rh.last_ms = (uint16_t)(mark > 0xFFFFu ? 0xFFFFu : mark);
+    rh.n++;
+    if (len && rh.n >= len) {
+        uint32_t good = 1;
+        for (i = 0; i < len; i++)
+            good &= rh.res[i] == RJ_GOOD;
+        rh.done = 1;
+        rh.sets++;
+        rh.good_sets = (uint16_t)(rh.good_sets + good);
+    }
+    rhythm_hint();
+    ui.redraw |= R_MAIN;
+}
+
 /* ------------------------------------------------------------------ input --- */
 static void settings_step(int32_t d);
+static void listen_reveal(void);
 
-static void type_key(uint32_t k)         /* TYPE: a key is a letter */
+/* TYPE: the character on key k (0 none) on page pg, in the layout set */
+static char type_char(uint32_t k, uint32_t pg)
 {
-    uint32_t i, n;
-    char c = 0;
+    static const char ALPHA_W[2][17] = {"ABCDEFGHIJKLMNOP", "1234567890.,?/=+"};
+    static const char ALPHA_B[2][12] = {"QRSTUVWXYZ ", "-()'\":;@!&$"};
+    static const char PIANO[2][28] = {"ABCDEFGHIJKLMNOPQRSTUVWXYZ ", "1234567890.,?/=+-()'\":;@!&$"};
+    static const char KOCH2[28] = "92H38B?47C1D60X'!()&:;+-\"$@";   /* the Koch order's last 15, then the rest */
+    uint32_t i;
+    if (k >= NKEYS || pg > 1u)
+        return 0;
+    switch (tlayout()) {
+    case TL_PIANO:
+        return PIANO[pg][k];
+    case TL_KOCH:
+        if (pg)
+            return KOCH2[k];
+        return k < 26u ? ln_char(k) : ' ';
+    default:
+        for (i = 0; i < 16u; i++)
+            if (WHITE[i] == k)
+                return ALPHA_W[pg][i];
+        for (i = 0; i < 11u; i++)
+            if (BLACK[i] == k)
+                return ALPHA_B[pg][i];
+        return 0;
+    }
+}
+
+static const char *type_phrase(uint32_t k)
+{
+    uint32_t i;
     for (i = 0; i < 16u; i++)
         if (WHITE[i] == k)
-            c = TYPE_W[ui.shift][i];
+            return CT_PHRASE_WHITE[i];
     for (i = 0; i < 11u; i++)
         if (BLACK[i] == k)
-            c = TYPE_B[ui.shift][i];
-    if (!c)
-        return;
-    n = 0;
-    while (ui.line[n])
-        n++;
-    if (n >= sizeof ui.line - 1u) {
-        for (i = 0; i + 1u < n; i++)
-            ui.line[i] = ui.line[i + 1u];
-        n--;
+            return CT_PHRASE_BLACK[i];
+    return 0;
+}
+
+static void line_add(const char *s)      /* TYPE: onto the line typed, the oldest dropped */
+{
+    uint32_t n = slen(ui.line), i;
+    for (; *s; s++) {
+        if (n >= sizeof ui.line - 1u) {
+            for (i = 0; i + 1u < n; i++)
+                ui.line[i] = ui.line[i + 1u];
+            n--;
+        }
+        ui.line[n++] = *s;
+        ui.line[n] = 0;
     }
-    ui.line[n] = c;
-    ui.line[n + 1u] = 0;
-    play_char(&ptx, c);
-    txt_add(2, c);
-    send_char(c);
+}
+
+static void type_key(uint32_t k)         /* TYPE: a key is a letter, or a phrase */
+{
+    char s[CT_LINE_MAX + 2];
+    uint32_t i;
+    if (ui.tpage == 2u) {
+        const char *p = type_phrase(k);
+        if (!p)
+            return;
+        s[0] = 0;
+        text_cat(s, p);
+        text_cat(s, " ");
+        ui.gloss = ct_gloss(p);
+    } else {
+        s[0] = type_char(k, ui.tpage);
+        s[1] = 0;
+        if (!s[0])
+            return;
+        ui.gloss = 0;
+    }
+    line_add(s);
+    for (i = 0; s[i]; i++)
+        txt_add(2, s[i]);
+    if (!tcompose()) {                   /* LIVE: each key plays and goes out at once */
+        play(&ptx, s);
+        send_text(s);
+    }
     ui.redraw |= R_MAIN;
+}
+
+static void type_play(void)              /* PLAY on TYPE: the line (COMPOSE: sent now), or stop what plays */
+{
+    uint32_t i, n = slen(ui.line);
+    if (playing(&ptx)) {
+        play_stop(&ptx);
+        return;
+    }
+    play(&ptx, " ");
+    play(&ptx, ui.line);
+    if (tcompose())
+        for (i = 0; i < n; i += HOSTLINK_MAX)
+            send_text(ui.line + i);
 }
 
 static void page_key(uint32_t k)         /* a piano key went down */
@@ -684,7 +1138,7 @@ static void page_key(uint32_t k)         /* a piano key went down */
         pr.until = 0;                    /* on without waiting */
 }
 
-static void page_play(void)              /* PLAY: start, again */
+static void page_play(void)              /* PLAY: start, again, stop */
 {
     const ln_card_t *c;
     switch (ui.page) {
@@ -698,12 +1152,22 @@ static void page_play(void)              /* PLAY: start, again */
             inputs_for_page();
         }
         break;
+    case PG_LISTEN:
+        if (ls.on)
+            listen_stop();
+        else
+            listen_start();
+        break;
     case PG_TYPE:
-        play(&ptx, " ");
-        play(&ptx, ui.line);
+        type_play();
         break;
     case PG_CHART:
         play_char(&ptx, ln_char(ui.csel));
+        break;
+    case PG_RHYTHM:
+        rhythm_reset();
+        rhythm_hint();
+        ui.redraw |= R_MAIN;
         break;
     case PG_MENU:
         set_page(ui.sel + 1u);
@@ -713,7 +1177,7 @@ static void page_play(void)              /* PLAY: start, again */
     }
 }
 
-static void page_sel(void)               /* SEL: choose, skip */
+static void page_sel(void)               /* SEL: choose, skip, switch */
 {
     const ln_card_t *c;
     switch (ui.page) {
@@ -731,6 +1195,14 @@ static void page_sel(void)               /* SEL: choose, skip */
         else
             practice_start();
         break;
+    case PG_LISTEN:
+        listen_reveal();
+        break;
+    case PG_TYPE:
+        look_set(6, 1u, !tcompose());
+        look_changed();
+        app_say(tcompose() ? "COMPOSE" : "LIVE", tcompose() ? "PLAY SENDS THE LINE" : "EACH KEY GOES OUT");
+        break;
     case PG_CHART:
         play_char(&ptx, ln_char(ui.csel));
         break;
@@ -742,28 +1214,57 @@ static void page_sel(void)               /* SEL: choose, skip */
     }
 }
 
+#define SET_ITEMS 11u
 static void page_select(int32_t e)       /* SELECT turned */
 {
     int32_t d = e > 0 ? 1 : -1;
     const ln_card_t *c;
     switch (ui.page) {
     case PG_MENU:
-        ui.sel = (uint8_t)((ui.sel + PG_N - 1u + (uint32_t)(d + (int32_t)(PG_N - 1u))) % (PG_N - 1u));
+        ui.sel = (uint8_t)wrap(ui.sel, d, PG_N - 1u);
         break;
     case PG_PRACTICE:
         if (pr.ps == PS_CARD && (c = ln_card(&pr.r)) != 0 && ln_choose(c->type))
-            pr.pick = (uint8_t)((pr.pick + 4u + (uint32_t)(d + 4)) % 4u);
+            pr.pick = (uint8_t)wrap(pr.pick, d, 4u);
+        break;
+    case PG_LISTEN:
+        SET.prog = (uint8_t)wrap(SET.prog, d, LP_N);
+        look_changed();
+        if (ls.on)
+            listen_start();
+        break;
+    case PG_RHYTHM:
+        rh.drill = (uint8_t)wrap(rh.drill, d, RH_DRILLS);
+        rhythm_reset();
+        rhythm_hint();
         break;
     case PG_CHART:
-        ui.csel = (uint8_t)((ui.csel + LN_N + (uint32_t)(d + (int32_t)LN_N)) % LN_N);
+        ui.csel = (uint8_t)wrap(ui.csel, d, LN_N);
         break;
     case PG_SET:
-        ui.sel = (uint8_t)((ui.sel + 8u + (uint32_t)(d + 8)) % 8u);
+        ui.sel = (uint8_t)wrap(ui.sel, d, SET_ITEMS);
         break;
     default:
         break;
     }
     ui.redraw |= R_MAIN | R_FOOT;
+}
+
+static void say_speed(const char *what, uint32_t wpm)   /* a speed, and what it means in ms */
+{
+    char a[24], b[24];
+    uint32_t dit = mo_dit_ms(wpm);
+    a[0] = 0;
+    text_cat(a, what);
+    int_cat(a, (int32_t)wpm);
+    text_cat(a, " WPM");
+    b[0] = 0;
+    text_cat(b, "DIT ");
+    int_cat(b, (int32_t)dit);
+    text_cat(b, "MS DAH ");
+    int_cat(b, (int32_t)(3u * dit));
+    text_cat(b, "MS");
+    app_say(a, b);
 }
 
 static void speed(int32_t d)
@@ -775,24 +1276,51 @@ static void speed(int32_t d)
         SET.eff = (uint8_t)w;
     SET.wpm = (uint8_t)w;
     set_changed();
+    say_speed("HEAR ", SET.wpm);
 }
 
 static void spacing(int32_t d)
 {
+    char a[24], b[24];
     int32_t e = clamp((int32_t)SET.eff + d, 5, SET.wpm);
     if (e == SET.eff)
         return;
     SET.eff = (uint8_t)e;
     set_changed();
+    a[0] = 0;
+    text_cat(a, "SPACING ");
+    int_cat(a, e);
+    text_cat(a, " WPM");
+    b[0] = 0;
+    text_cat(b, "LETTER GAP ");
+    int_cat(b, (int32_t)(3u * mo_gap_ms(SET.wpm, SET.eff)));
+    text_cat(b, "MS");
+    app_say(a, b);
+}
+
+static void send_speed(int32_t d)
+{
+    int32_t w = clamp((int32_t)SET.send + d, 5, 40);
+    if (w == SET.send)
+        return;
+    SET.send = (uint8_t)w;
+    set_changed();
+    say_speed("SEND ", SET.send);
 }
 
 static void pitch(int32_t d)
 {
+    char a[24];
     int32_t p = clamp((int32_t)SET.pitch + d * 10, 300, 1200);
     if (p == SET.pitch)
         return;
     SET.pitch = (uint16_t)p;
     set_changed();
+    a[0] = 0;
+    text_cat(a, "PITCH ");
+    int_cat(a, p);
+    text_cat(a, " HZ");
+    app_say(a, "");
 }
 
 static void mute_toggle(void)
@@ -802,32 +1330,72 @@ static void mute_toggle(void)
     app_say("SOUND", SET.mute ? "OFF: WATCH THE LIGHTS" : "ON");
 }
 
-/* the settings page: SELECT moves, OCT- / OCT+ (or SEL, K4) change */
-static const char *const SET_NAME[8] = {"SPEED", "SPACING", "PITCH", "KEYER", "PADDLES", "SOUND", "CARDS", "LEARN BY"};
+/* speeds that go together, from a beginner's to a fluent operator's: Koch's characters at 20 WPM or more with the
+ * gaps stretched (Farnsworth) to give time to think, and a hand that sends what it can keep even */
+static const struct {
+    const char *name, *what;
+    uint8_t wpm, eff, send;
+} PRESET[] = {
+    {"START", "HEAR 20/8 SEND 10", 20, 8, 10},
+    {"BUILDING", "HEAR 20/13 SEND 13", 20, 13, 13},
+    {"QSO", "HEAR 22/18 SEND 18", 22, 18, 18},
+    {"FAST", "HEAR 25/25 SEND 22", 25, 25, 22},
+};
+#define NPRESET (sizeof PRESET / sizeof PRESET[0])
+
+static int preset_now(void)              /* the preset the speeds match, -1 none */
+{
+    uint32_t i;
+    for (i = 0; i < NPRESET; i++)
+        if (SET.wpm == PRESET[i].wpm && SET.eff == PRESET[i].eff && SET.send == PRESET[i].send)
+            return (int)i;
+    return -1;
+}
+
+static void preset_step(int32_t d)
+{
+    int p = preset_now();
+    uint32_t i = p < 0 ? (d > 0 ? 0u : NPRESET - 1u) : wrap((uint32_t)p, d, NPRESET);
+    SET.wpm = PRESET[i].wpm;
+    SET.eff = PRESET[i].eff;
+    SET.send = PRESET[i].send;
+    set_changed();
+    app_say(PRESET[i].name, PRESET[i].what);
+}
+
+/* the settings page: SELECT moves, OCT- / OCT+ (or SEL) change */
+static const char *const SET_NAME[SET_ITEMS] = {"PRESET", "HEAR SPEED", "SPACING", "SEND SPEED", "PITCH",    "KEYER",
+                                                "PADDLES", "SOUND",     "CARDS",   "LEARN BY",   "TYPE KEYS"};
 static void settings_step(int32_t d)
 {
     switch (ui.sel) {
-    case 0: speed(d); break;
-    case 1: spacing(d); break;
-    case 2: pitch(d); break;
-    case 3:
-        SET.keyer = (uint8_t)((SET.keyer + MO_NKEYER + (uint32_t)(d + MO_NKEYER)) % MO_NKEYER);
+    case 0: preset_step(d); break;
+    case 1: speed(d); break;
+    case 2: spacing(d); break;
+    case 3: send_speed(d); break;
+    case 4: pitch(d); break;
+    case 5:
+        SET.keyer = (uint8_t)wrap(SET.keyer, d, MO_NKEYER);
         set_changed();
         break;
-    case 4:
+    case 6:
         SET.swap = (uint8_t)!SET.swap;
         set_changed();
         break;
-    case 5: mute_toggle(); break;
-    case 6:
+    case 7: mute_toggle(); break;
+    case 8:
         SET.cards = (uint8_t)clamp((int32_t)SET.cards + d * 5, 10, 30);
         set_changed();
         break;
-    case 7:
+    case 9:
         SET.learn = (uint8_t)!SET.learn;
         set_changed();
         if (visual())
             app_say("TIP", "SOUND FIRST IS FASTER LATER");
+        break;
+    case 10:
+        look_set(3, 3u, wrap(tlayout(), d, TL_N));
+        look_changed();
         break;
     default:
         break;
@@ -849,44 +1417,66 @@ static void input(void)
         case B_FX: mute_toggle(); break;
         case B_PLAY: page_play(); break;
         case B_SEL: page_sel(); break;
+        case B_SEQ:                      /* a page's view */
+            if (ui.page == PG_KEY)
+                look_set(0, 3u, wrap(kview(), 1, KV_N));
+            else if (ui.page == PG_TYPE)
+                look_set(2, 1u, !tlabel());
+            else if (ui.page == PG_LISTEN)
+                look_set(5, 1u, !lhide());
+            else
+                break;
+            look_changed();
+            break;
+        case B_REC:                      /* TYPE: the last character off the line (on release; held: all of it) */
+            if (ui.page == PG_TYPE)
+                ui.rec_t = plat_ms() | 1u;
+            break;
         case B_OCTDN:
-            if (ui.page == PG_KEY) {
+        case B_OCTUP:
+            if (ui.page == PG_KEY && k == B_OCTDN) {
                 grid.n = 0;
+                tim.count = 0;
                 ui.last = 0;
                 ui.redraw |= R_MAIN;
+            } else if (ui.page == PG_TYPE) {   /* the next page of keys: letters, signs, phrases */
+                ui.tpage = (uint8_t)wrap(ui.tpage, k == B_OCTUP ? 1 : -1, 3u);
+                ui.redraw |= R_MAIN | R_FOOT;
             } else if (ui.page == PG_SET)
-                settings_step(-1);
-            break;
-        case B_OCTUP:
-            if (ui.page == PG_TYPE) {
-                uint32_t n = 0;
-                while (ui.line[n])
-                    n++;
-                if (n)
-                    ui.line[n - 1u] = 0;
-                ui.redraw |= R_MAIN;
-            } else if (ui.page == PG_SET)
-                settings_step(1);
+                settings_step(k == B_OCTUP ? 1 : -1);
             break;
         default: break;
         }
     }
-    if (ui.page == PG_TYPE && (uint8_t)(btn >> B_OCTDN & 1u) != ui.shift) {
-        ui.shift = (uint8_t)(btn >> B_OCTDN & 1u);
-        ui.redraw |= R_MAIN | R_FOOT;
-    }
+    if (ui.rec_t && ui.page == PG_TYPE) {
+        if (!(btn >> B_REC & 1u)) {      /* let go soon: one character */
+            uint32_t n = slen(ui.line);
+            if (n)
+                ui.line[n - 1u] = 0;
+            ui.rec_t = 0;
+            ui.redraw |= R_MAIN;
+        } else if ((int32_t)(plat_ms() - ui.rec_t) >= 600) {   /* held: the whole line */
+            ui.line[0] = 0;
+            ui.gloss = 0;
+            ui.rec_t = 0;
+            play_stop(&ptx);
+            app_say("LINE CLEARED", "");
+            ui.redraw |= R_MAIN;
+        }
+    } else if (!(btn >> B_REC & 1u))
+        ui.rec_t = 0;
     if ((e = plat_enc(EN_SELECT)) != 0)
         page_select(e);
     if ((e = plat_enc(EN_ALGO)) != 0)
-        set_page((uint32_t)((int32_t)ui.page + PG_N + (e > 0 ? 1 : -1)) % PG_N);
+        set_page(wrap(ui.page, e > 0 ? 1 : -1, PG_N));
     if ((e = plat_enc(EN_K1)) != 0)
         speed(e > 0 ? 1 : -1);
     if ((e = plat_enc(EN_K2)) != 0)
         spacing(e > 0 ? 1 : -1);
     if ((e = plat_enc(EN_K3)) != 0)
         pitch(e > 0 ? 1 : -1);
-    if ((e = plat_enc(EN_K4)) != 0 && ui.page == PG_SET)
-        settings_step(e > 0 ? 1 : -1);
+    if ((e = plat_enc(EN_K4)) != 0)
+        send_speed(e > 0 ? 1 : -1);
     (void)plat_enc(EN_PRESET);
     if (btn != ui.btn)
         ui.redraw |= R_FOOT;
@@ -928,7 +1518,9 @@ static void lights(uint32_t now)
 #define C_RX RGB(255, 176, 0)
 #define C_OK RGB(80, 220, 120)
 #define C_BAD RGB(240, 70, 60)
+#define C_MEH RGB(230, 200, 60)
 #define C_BLUE RGB(70, 140, 255)
+#define C_BOX RGB(60, 60, 70)
 
 static uint16_t level_rgb(uint32_t lv)   /* the chart's colours, box 0 .. 5 */
 {
@@ -948,6 +1540,16 @@ static void draw_code(uint8_t code, int32_t cx, int32_t y, int32_t u, uint16_t c
     }
 }
 
+static void draw_code_v(uint8_t code, int32_t cx, int32_t y, int32_t u, uint16_t c)   /* top down, on a key */
+{
+    uint32_t n = mo_len(code), i;
+    for (i = 0; i < n; i++) {
+        int32_t h = mo_elem(code, i) ? 3 * u : u;
+        cv_rect(cx - u / 2 - 1, y, u + 1, h, c);
+        y += h + u;
+    }
+}
+
 static void text_c(int32_t cx, int32_t y, const felucca_font_t *f, const char *s, uint16_t c)   /* centred */
 {
     cv_text(cx - text_w(f, s) / 2, y, f, s, c);
@@ -955,7 +1557,7 @@ static void text_c(int32_t cx, int32_t y, const felucca_font_t *f, const char *s
 
 static void draw_header(uint32_t now)
 {
-    static const char *const PAGE[PG_N] = {"MENU", "PRACTICE", "KEY", "TYPE", "CHART", "SETTINGS"};
+    static const char *const PAGE[PG_N] = {"MENU", "PRACTICE", "LISTEN", "KEY", "RHYTHM", "TYPE", "CHART", "SETTINGS"};
     char t[24];
     int32_t x;
     cv_begin(240, 32, C_BLACK);
@@ -965,10 +1567,15 @@ static void draw_header(uint32_t now)
     } else {
         cv_text(8, 7, &FONT_B, PAGE[ui.page], C_WHITE);
         t[0] = 0;
-        int_text(SET.wpm, t);
-        if (SET.eff < SET.wpm) {
-            text_cat(t, "/");
-            int_cat(t, SET.eff);
+        if (ui.page == PG_KEY || ui.page == PG_RHYTHM) {   /* the speed this page goes by */
+            text_cat(t, "SEND ");
+            int_cat(t, SET.send);
+        } else {
+            int_cat(t, SET.wpm);
+            if (SET.eff < SET.wpm) {
+                text_cat(t, "/");
+                int_cat(t, SET.eff);
+            }
         }
         text_cat(t, " WPM");
         x = 232 - text_w(&FONT_XS, t);
@@ -986,7 +1593,6 @@ static void draw_header(uint32_t now)
     cv_blit(0, 0);
 }
 
-/* the main area, y 32..207 (176 high), in strips no taller than the canvas */
 static void draw_lamp(int32_t y)         /* the keying as a light: white sending, amber receiving */
 {
     int tx = tone_gated(TONE_TX), rx = tone_gated(TONE_RX);
@@ -995,40 +1601,48 @@ static void draw_lamp(int32_t y)         /* the keying as a light: white sending
     cv_blit(0, y);
 }
 
-static void key_page(void)
+/* KEY: the top strip (the letter so far, the last one read, how it is going), then one of three views */
+static void key_top(void)
 {
-    char t[32];
-    uint32_t r, i;
+    char t[40];
     uint8_t pend = mo_dec_pending(&dsrc[SRC_OWN].dec);
+    const mo_dec_t *d = &dsrc[SRC_OWN].dec;
     cv_begin(240, 56, C_BLACK);
-    if (visual() && pend > 1u)
+    if ((visual() || kview() != KV_TEXT) && pend > 1u)
         draw_code(pend, 90, 22, 8, C_OWN);
     if (ui.last) {
         t[0] = ui.last, t[1] = 0;
         text_c(200, 6, &FONT_L, t, C_OWN);
     }
-    if (dsrc[SRC_OWN].dec.marks >= 4u) {  /* how it is going: the speed it reads, the dah:dit (3.0 the book) */
-        uint32_t q = mo_dec_ratio10(&dsrc[SRC_OWN].dec);
+    if (d->marks >= 4u) {                /* how it is going: speed, dah:dit (3.0 the book), gaps inside (1.0) */
+        uint32_t q = mo_dec_ratio10(d), g = mo_dec_gap10(d);
         t[0] = 0;
         text_cat(t, "YOU ");
-        int_cat(t, (int32_t)mo_dec_wpm(&dsrc[SRC_OWN].dec));
+        int_cat(t, (int32_t)mo_dec_wpm(d));
         text_cat(t, " WPM");
         if (q) {
             text_cat(t, "  DAH:DIT ");
-            int_cat(t, (int32_t)(q / 10u));
-            text_cat(t, ".");
-            int_cat(t, (int32_t)(q % 10u));
+            tenths_cat(t, q);
         }
-        cv_text(8, 40, &FONT_XS, t, C_GRAY);
+        if (g) {
+            text_cat(t, "  GAP ");
+            tenths_cat(t, g);
+        }
+        cv_text(8, 40, &FONT_XS, t, g > 18u || (q && (q < 22u || q > 42u)) ? C_RX : C_GRAY);
     }
     cv_blit(0, 32);
-    draw_lamp(88);
+}
+
+static void key_text(void)
+{
+    char t[2] = {0, 0};
+    uint32_t r, i;
     cv_begin(240, 110, C_BLACK);
     for (r = 0; r < TG_ROWS; r++)
         for (i = 0; i < TG_COLS; i++) {
             uint32_t k = r * TG_COLS + i;
             if (k < grid.n) {
-                t[0] = grid.c[k], t[1] = 0;
+                t[0] = grid.c[k];
                 cv_text(4 + (int32_t)i * 10, 2 + (int32_t)r * 22, &FONT_S, t, grid.who[k] == SRC_RX ? C_RX : C_OWN);
             }
         }
@@ -1038,39 +1652,193 @@ static void key_page(void)
     cv_blit(0, 98);
 }
 
-static void type_page(void)
+#define CU 4                             /* the CODE view: px a unit */
+static void key_code(void)               /* each letter over what was keyed for it */
+{
+    static uint8_t rows[TG_N];
+    static int16_t xs[TG_N];
+    char t[2] = {0, 0};
+    int32_t x = 4, row = 0, first;
+    uint32_t i;
+    for (i = 0; i < grid.n; i++) {       /* lay them out: a letter is as wide as its code */
+        int32_t w;
+        if (grid.c[i] == ' ') {
+            rows[i] = (uint8_t)row, xs[i] = (int16_t)x;
+            x += 10;
+            continue;
+        }
+        t[0] = grid.c[i];
+        w = text_w(&FONT_B, t);
+        if (grid.pat[i] > 1u && (int32_t)mo_units(grid.pat[i]) * CU > w)
+            w = (int32_t)mo_units(grid.pat[i]) * CU;
+        if (x + w > 236 && x > 4) {
+            row++;
+            x = 4;
+        }
+        rows[i] = (uint8_t)row, xs[i] = (int16_t)x;
+        x += w + 8;
+    }
+    first = row > 3 ? row - 3 : 0;
+    cv_begin(240, 110, C_BLACK);
+    for (i = 0; i < grid.n; i++) {
+        int32_t y = 2 + ((int32_t)rows[i] - first) * 27;
+        uint16_t c = grid.who[i] == SRC_RX ? C_RX : grid.c[i] == MO_UNKNOWN ? C_BAD : C_OWN;
+        if ((int32_t)rows[i] < first || grid.c[i] == ' ')
+            continue;
+        t[0] = grid.c[i];
+        cv_text(xs[i], y, &FONT_B, t, c);
+        if (grid.pat[i] > 1u) {
+            uint32_t n = mo_len(grid.pat[i]), k;
+            int32_t px = xs[i];
+            for (k = 0; k < n; k++) {
+                int32_t w = mo_elem(grid.pat[i], k) ? 3 * CU : CU;
+                cv_rect(px, y + 19, w, CU, c);
+                px += w + CU;
+            }
+        }
+    }
+    if (!grid.n)
+        cv_text(8, 40, &FONT_XS, "each letter over its dits and dahs", C_DIM);
+    cv_blit(0, 98);
+}
+
+#define TU 8                             /* the TIMING view and RHYTHM: px a dit (of the send speed) */
+static void tim_row(const trow_t *r, int32_t y, int live)
 {
     char t[2] = {0, 0};
-    uint32_t i, n = 0;
+    uint32_t dit = mo_dit_ms(SET.send), i;
+    int32_t x = 28;
+    t[0] = live ? '_' : r->c;
+    cv_text(6, y, &FONT_B, t, r->c == MO_UNKNOWN ? C_BAD : live ? C_DIM : C_OWN);
+    for (i = 0; i < r->n && x < 240; i++) {
+        int32_t w;
+        int dah = live ? mo_dec_is_dah(&dsrc[SRC_OWN].dec, r->mark[i]) : (int)(r->dah >> i & 1u);
+        if (i) {
+            int32_t g = (int32_t)(r->gap[i] * TU / dit);
+            if (r->gap[i] * 10u > dit * 16u)   /* a long gap inside a letter: where it gets split */
+                cv_rect(x, y + 13, g, 2, C_BAD);
+            x += g;
+        }
+        w = (int32_t)(r->mark[i] * TU / dit);
+        if (w < 2)
+            w = 2;
+        if (x + w > 240)
+            w = 240 - x;
+        cv_rect(x, y + 4, w, 8, dah ? C_RX : C_OWN);
+        x += w;
+    }
+}
+
+static void key_timing(void)             /* each letter as keyed, to scale: is a dit a dit? */
+{
+    char t[32];
+    uint32_t i, dit = mo_dit_ms(SET.send);
+    int32_t y = 14;
+    cv_begin(240, 110, C_BLACK);
+    cv_rect(28, 2, TU, 3, C_GRAY);       /* the ruler: a dit and a dah at the send speed */
+    cv_rect(28 + 2 * TU, 2, 3 * TU, 3, C_GRAY);
+    t[0] = 0;
+    text_cat(t, "DIT ");
+    int_cat(t, (int32_t)dit);
+    text_cat(t, "  DAH ");
+    int_cat(t, (int32_t)(3u * dit));
+    text_cat(t, " MS");
+    cv_text(96, 0, &FONT_T, t, C_GRAY);
+    for (i = 0; i < tim.count; i++) {    /* oldest first */
+        const trow_t *r = &tim.row[(tim.head + TR_N - tim.count + i) % TR_N];
+        tim_row(r, y, 0);
+        y += 19;
+    }
+    if (tim.live.n)
+        tim_row(&tim.live, y, 1);
+    if (!tim.count && !tim.live.n)
+        cv_text(8, 40, &FONT_XS, "red: a gap that splits a letter", C_DIM);
+    cv_blit(0, 98);
+}
+
+static void key_page(void)
+{
+    key_top();
+    draw_lamp(88);
+    if (kview() == KV_CODE)
+        key_code();
+    else if (kview() == KV_TIMING)
+        key_timing();
+    else
+        key_text();
+}
+
+static void type_page(void)
+{
+    static const char *const PAGE[3] = {"LETTERS", "DIGITS + SIGNS", "PHRASES"};
+    char t[8];
+    uint32_t i, n = slen(ui.line);
     char cur = ptx.cur;
-    while (ui.line[n])
-        n++;
     cv_begin(240, 80, C_BLACK);
     for (i = 0; i < n; i++) {
         t[0] = ui.line[i] == ' ' ? '_' : ui.line[i];
-        cv_text(4 + (int32_t)(i % TG_COLS) * 10, 4 + (int32_t)(i / TG_COLS) * 22, &FONT_S, t,
+        t[1] = 0;
+        cv_text(4 + (int32_t)(i % TG_COLS) * 10, 2 + (int32_t)(i / TG_COLS) * 20, &FONT_S, t,
                 ui.line[i] == ' ' ? C_DIM : C_OWN);
     }
-    if (cur && visual())
-        draw_code(mo_code(cur), 120, 62, 6, C_RX);
+    if (ui.tpage == 2u && ui.gloss)
+        cv_text(4, 46, &FONT_XS, ui.gloss, C_RX);
+    else if (cur && (visual() || tlabel()))
+        draw_code(mo_code(cur), 120, 52, 6, C_RX);
+    {
+        int32_t x = cv_text(4, 64, &FONT_T, PAGE[ui.tpage], C_GRAY);
+        cv_text(x + 12, 64, &FONT_T, tcompose() ? "COMPOSE: PLAY SENDS" : "LIVE: EACH KEY GOES OUT",
+                tcompose() ? C_RX : C_DIM);
+    }
     cv_blit(0, 32);
     draw_lamp(112);
     /* the keyboard: 16 white keys 15 px each, the black ones over their gaps */
     cv_begin(240, 86, C_BLACK);
     for (i = 0; i < 16u; i++) {
-        char c = TYPE_W[ui.shift][i];
-        cv_rect((int32_t)i * 15, 0, 14, 84, c == cur ? C_RX : RGB(200, 200, 206));
-        t[0] = c;
-        text_c((int32_t)i * 15 + 7, 64, &FONT_XS, t, C_BLACK);
+        uint32_t k = WHITE[i];
+        int32_t x = (int32_t)i * 15;
+        char c = ui.tpage < 2u ? type_char(k, ui.tpage) : 0;
+        cv_rect(x, 0, 14, 84, c && c == cur ? C_RX : RGB(200, 200, 206));
+        if (ui.tpage == 2u) {            /* a phrase: its name down the key */
+            const char *p = type_phrase(k);
+            uint32_t j, m = 0;
+            for (j = 0; p && p[j] && m < 4u; j++)
+                if (p[j] != '<' && p[j] != '>' && p[j] != '?') {
+                    t[0] = p[j], t[1] = 0;
+                    text_c(x + 7, 48 + (int32_t)m * 9, &FONT_T, t, C_BLACK);
+                    m++;
+                }
+        } else {
+            t[0] = c, t[1] = 0;
+            if (tlabel() && c && c != ' ')
+                draw_code_v(mo_code(c), x + 7, 49, 2, C_BLACK);
+            text_c(x + 7, 68, &FONT_XS, c == ' ' ? "_" : t, C_BLACK);
+        }
     }
     for (i = 0; i < 11u; i++) {
         uint32_t w = 0, k = BLACK[i];
-        char c = TYPE_B[ui.shift][i];
+        int32_t x;
+        char c = ui.tpage < 2u ? type_char(k, ui.tpage) : 0;
         while (w < 16u && WHITE[w] < k)
             w++;
-        cv_rect((int32_t)w * 15 - 6, 0, 12, 46, c == cur ? C_RX : RGB(40, 40, 46));
-        t[0] = c == ' ' ? '_' : c;
-        text_c((int32_t)w * 15, 26, &FONT_XS, t, C_WHITE);
+        x = (int32_t)w * 15;
+        cv_rect(x - 6, 0, 12, 46, c && c == cur ? C_RX : RGB(40, 40, 46));
+        if (ui.tpage == 2u) {
+            const char *p = type_phrase(k);
+            uint32_t j, m = 0;
+            for (j = 0; p && p[j] && m < 3u; j++)
+                if (p[j] != '<' && p[j] != '>' && p[j] != '?') {
+                    t[0] = p[j], t[1] = 0;
+                    text_c(x, 4 + (int32_t)m * 9, &FONT_T, t, C_WHITE);
+                    m++;
+                }
+        } else {
+            t[0] = c == ' ' ? '_' : c, t[1] = 0;
+            if (tlabel() && c && c != ' ')
+                draw_code_v(mo_code(c), x, 3, 2, C_WHITE);
+            else
+                text_c(x, 26, &FONT_XS, t, C_WHITE);
+        }
     }
     cv_blit(0, 122);
 }
@@ -1169,9 +1937,7 @@ static void practice_at(int32_t oy)      /* drawn twice, each half with the rows
         if (pr.ratio10 && card_key(a)) {
             t[0] = 0;
             text_cat(t, "DAH:DIT ");
-            int_cat(t, (int32_t)(pr.ratio10 / 10u));
-            text_cat(t, ".");
-            int_cat(t, (int32_t)(pr.ratio10 % 10u));
+            tenths_cat(t, pr.ratio10);
             text_cat(t, pr.ratio10 < 25u ? "  dahs short" : pr.ratio10 > 40u ? "  dahs long" : "");
             text_c(120, 146 - oy, &FONT_XS, t, C_GRAY);
         }
@@ -1210,11 +1976,149 @@ static void practice_at(int32_t oy)      /* drawn twice, each half with the rows
         }
         if (card_key(c)) {
             uint8_t pend = mo_dec_pending(&dsrc[SRC_OWN].dec);
-            if (visual() && pend > 1u)
+            if ((visual() || kview() != KV_TEXT) && pend > 1u)
                 draw_code(pend, 120, 112 - oy, 8, C_OWN);
             text_c(120, 136 - oy, &FONT_XS, pr.answer_ok ? "your turn" : "listen", pr.answer_ok ? C_OK : C_DIM);
         }
     }
+}
+
+static void listen_reveal(void)          /* SEL while hidden: the line playing, for a moment */
+{
+    if (ls.on && lhide())
+        app_say("NOW:", ls.l[ls.cur].t);
+}
+
+/* s in cells of cw px, cols a row; the first `bright` playable characters lit, the rest dim (hidden: not shown); the
+ * rows that hold the lit part kept in view */
+static void wrap_text(const char *s, int32_t x, int32_t y, const felucca_font_t *f, int32_t cw, uint32_t cols,
+                      uint32_t rows, uint32_t bright, int hide, int32_t oy)
+{
+    char t[2] = {0, 0};
+    uint32_t i, k = 0, n = slen(s), at = 0, first = 0, lit_n = 0;
+    for (i = 0; i < n; i++)
+        if (k < bright && playable(s[i]))
+            k++, at = i;
+    if (at / cols >= rows)
+        first = at / cols - rows + 1u;
+    for (i = 0; i < n && i < (first + rows) * cols; i++) {
+        uint32_t lit;
+        lit_n += (uint32_t)playable(s[i]);
+        lit = lit_n <= bright && s[i] != ' ';
+        if (i < first * cols || (hide && !lit))
+            continue;
+        t[0] = hide ? '_' : s[i];
+        cv_text(x + (int32_t)(i % cols) * cw, y + (int32_t)(i / cols - first) * 20 - oy, f, t, lit ? C_WHITE : C_DIM);
+    }
+}
+
+static void listen_at(int32_t oy)
+{
+    char t[40];
+    cv_text(8, 2 - oy, &FONT_B, LP_NAME[SET.prog], C_WHITE);
+    t[0] = 0;
+    if (ls.count) {
+        int_cat(t, (int32_t)ls.count);
+        text_cat(t, " LINES");
+    }
+    cv_text(232 - text_w(&FONT_XS, t), 4 - oy, &FONT_XS, t, C_DIM);
+    if (!ls.on) {
+        text_c(120, 50 - oy, &FONT_B, "PLAY: START", C_RX);
+        text_c(120, 76 - oy, &FONT_XS, "SELECT: the program", C_DIM);
+        text_c(120, 94 - oy, &FONT_XS, lhide() ? "hidden: copy it in your head" : "the text shown as it plays",
+               C_DIM);
+        return;
+    }
+    wrap_text(ls.l[ls.cur].t, 4, 28, &FONT_S, 10, TG_COLS, 3, ls.l[ls.cur].played, (int)lhide(), oy);
+    if (!lhide() && ls.l[ls.cur].gloss)
+        cv_text(4, 92 - oy, &FONT_XS, ls.l[ls.cur].gloss, C_RX);
+    if (ls.prev[0]) {
+        cv_text(4, 112 - oy, &FONT_T, lhide() ? "IT WAS:" : "BEFORE:", C_GRAY);
+        wrap_text(ls.prev, 4, 126, &FONT_XS, 8, 29, 2, 0xFF, 0, oy);
+        if (ls.prev_gloss)
+            cv_text(120, 112 - oy, &FONT_T, ls.prev_gloss, C_RX);
+    }
+}
+
+static void rhythm_at(int32_t oy)
+{
+    static const char *const H1[] = {"PRESS ANY KEY",        "DITS ARE LONG", "DAHS ARE SHORT",      "DAHS ARE LONG",
+                                     "GAPS INSIDE ARE LONG", "LENGTHS VARY",  "DITS ARE VERY SHORT", "GOOD RHYTHM"};
+    static const char *const H2[] = {"dit short, dah three dits", "tap and let go",
+                                     "hold a dah about 3 dits",   "let go sooner: 3 dits",
+                                     "one dit between, no more",  "slow down, keep it even",
+                                     "fine if even",              "next drill, or K4 faster"};
+    static const char *const WHY_DIT[] = {"", "GOOD", "A BIT LONG", "TOO LONG: A DAH"};
+    static const char *const WHY_DAH[] = {"", "GOOD", "A BIT OFF", "TOO SHORT: A DIT"};
+    char t[48];
+    uint32_t len = rh_len(), i, n = len ? len : rh.n, dit = mo_dit_ms(SET.send);
+    int32_t x = 8;
+    cv_text(8, 0 - oy, &FONT_B, DRILL[rh.drill].name, C_WHITE);
+    t[0] = 0;
+    if (len) {
+        text_cat(t, "SETS ");
+        int_cat(t, rh.good_sets);
+        text_cat(t, "/");
+        int_cat(t, rh.sets);
+        text_cat(t, " CLEAN");
+    }
+    cv_text(232 - text_w(&FONT_XS, t), 2 - oy, &FONT_XS, t, C_DIM);
+    /* the set: a box for each target, the bar pressed over it */
+    for (i = 0; i < n && i < RH_MAX; i++) {
+        uint32_t want = len ? (uint32_t)(DRILL[rh.drill].pat[i] == '-') : rh.kind[i];
+        int32_t tw = want ? 3 * TU : TU, bw;
+        uint16_t c = rh.res[i] == RJ_GOOD ? C_OK : rh.res[i] == RJ_OFF ? C_MEH : C_BAD;
+        cv_rect(x, 26 - oy, tw, 14, C_BOX);
+        if (i < rh.n) {
+            bw = (int32_t)(rh.q[i] * TU / 10u);
+            if (bw < 2)
+                bw = 2;
+            if (bw > tw + 2 * TU)
+                bw = tw + 2 * TU;
+            cv_rect(x, 29 - oy, bw, 8, c);
+        } else if (i == rh.n && !rh.done)
+            cv_rect(x, 42 - oy, tw, 2, C_WHITE);   /* the next one */
+        x += tw + TU + (len ? 0 : TU);
+    }
+    if (rh.n) {                          /* the last press, in dits of the send speed */
+        uint32_t k = rh.n - 1u, q = rh.q[k];
+        uint16_t c = rh.res[k] == RJ_GOOD ? C_OK : rh.res[k] == RJ_OFF ? C_MEH : C_BAD;
+        t[0] = 0;
+        text_cat(t, rh.kind[k] ? "DAH " : "DIT ");
+        tenths_cat(t, q);
+        x = cv_text(8, 50 - oy, &FONT_M, t, C_WHITE);
+        t[0] = 0;
+        int_cat(t, rh.last_ms);
+        text_cat(t, " MS");
+        cv_text(x + 8, 58 - oy, &FONT_XS, t, C_GRAY);
+        if (len)
+            cv_text(8, 80 - oy, &FONT_XS, rh.kind[k] ? WHY_DAH[rh.res[k]] : WHY_DIT[rh.res[k]], c);
+        else if (rh.res[k] == RJ_OFF)
+            cv_text(8, 80 - oy, &FONT_XS, "IN BETWEEN: NEITHER", C_MEH);
+        if (k && rh.g[k] > 18u) {
+            t[0] = 0;
+            text_cat(t, "GAP BEFORE IT ");
+            tenths_cat(t, rh.g[k]);
+            cv_text(130, 80 - oy, &FONT_XS, t, C_RX);
+        }
+    } else {
+        t[0] = 0;
+        text_cat(t, "TARGET: DIT ");
+        int_cat(t, (int32_t)dit);
+        text_cat(t, " MS, DAH ");
+        int_cat(t, (int32_t)(3u * dit));
+        text_cat(t, " MS");
+        cv_text(8, 56 - oy, &FONT_XS, t, C_GRAY);
+        cv_text(8, 76 - oy, &FONT_XS, "K4 changes it (the send speed)", C_DIM);
+    }
+    cv_text(8, 106 - oy, &FONT_B, H1[rh.hint], rh.hint == H_GOOD ? C_OK : rh.hint == H_START ? C_GRAY : C_RX);
+    t[0] = 0;
+    text_cat(t, H2[rh.hint]);
+    if (rh.sugg && rh.sugg != SET.send) {
+        text_cat(t, ", or K4 to ");
+        int_cat(t, rh.sugg);
+    }
+    cv_text(8, 126 - oy, &FONT_XS, t, C_GRAY);
 }
 
 static void chart_at(int32_t oy)         /* the course like a kana chart: 7 x 6, coloured by box */
@@ -1236,44 +2140,60 @@ static void chart_at(int32_t oy)         /* the course like a kana chart: 7 x 6,
 static void set_at(int32_t oy)
 {
     static const char *const KEYER[MO_NKEYER] = {"STRAIGHT", "IAMBIC A", "IAMBIC B"};
-    char t[24];
+    static const char *const LAYOUT[TL_N] = {"A-P WHITE, Q-Z BLACK", "A-Z LEFT TO RIGHT", "KOCH ORDER"};
+    char t[32];
     uint32_t i;
-    for (i = 0; i < 8u; i++) {
-        int32_t y = 2 + (int32_t)i * 21 - oy;
+    for (i = 0; i < SET_ITEMS; i++) {
+        int32_t y = 1 + (int32_t)i * 16 - oy;
         if (i == ui.sel)
-            cv_rect(0, y - 2, 240, 20, C_LINE);
+            cv_rect(0, y - 1, 240, 16, C_LINE);
         cv_text(8, y, &FONT_XS, SET_NAME[i], C_GRAY);
         t[0] = 0;
         switch (i) {
-        case 0: int_cat(t, SET.wpm); text_cat(t, " WPM"); break;
+        case 0: {
+            int p = preset_now();
+            text_cat(t, p < 0 ? "CUSTOM" : PRESET[p].name);
+            if (p == 0)
+                text_cat(t, " (TO BEGIN)");
+            break;
+        }
         case 1:
+        case 3:
+            int_cat(t, i == 3 ? SET.send : SET.wpm);
+            text_cat(t, " WPM  DIT ");
+            int_cat(t, (int32_t)mo_dit_ms(i == 3 ? SET.send : SET.wpm));
+            text_cat(t, " MS");
+            break;
+        case 2:
             int_cat(t, SET.eff);
             text_cat(t, SET.eff < SET.wpm ? " WPM (FARNSWORTH)" : " WPM");
             break;
-        case 2: int_cat(t, SET.pitch); text_cat(t, " HZ"); break;
-        case 3: text_cat(t, KEYER[SET.keyer]); break;
-        case 4: text_cat(t, SET.swap ? "LEFT DAH" : "LEFT DIT"); break;
-        case 5: text_cat(t, SET.mute ? "OFF (LIGHTS)" : "ON"); break;
-        case 6: int_cat(t, SET.cards); text_cat(t, " A ROUND"); break;
-        case 7: text_cat(t, visual() ? "SIGHT" : "SOUND (BEST)"); break;
+        case 4: int_cat(t, SET.pitch); text_cat(t, " HZ"); break;
+        case 5: text_cat(t, KEYER[SET.keyer]); break;
+        case 6: text_cat(t, SET.swap ? "LEFT DAH" : "LEFT DIT"); break;
+        case 7: text_cat(t, SET.mute ? "OFF (LIGHTS)" : "ON"); break;
+        case 8: int_cat(t, SET.cards); text_cat(t, " A ROUND"); break;
+        case 9: text_cat(t, visual() ? "SIGHT" : "SOUND (BEST)"); break;
+        case 10: text_cat(t, LAYOUT[tlayout()]); break;
         default: break;
         }
-        cv_text(100, y, &FONT_XS, t, i == ui.sel ? C_WHITE : C_RX);
+        cv_text(96, y, &FONT_XS, t, i == ui.sel ? C_WHITE : C_RX);
     }
 }
 
 static void menu_at(int32_t oy)
 {
-    static const char *const NAME[PG_N - 1] = {"PRACTICE", "KEY", "TYPE", "CHART", "SETTINGS"};
-    static const char *const WHAT[PG_N - 1] = {"flash cards, a few minutes", "send, it reads you",
-                                               "the keys are letters", "how far you are", "speed, pitch, keyer"};
+    static const char *const NAME[PG_N - 1] = {"PRACTICE", "LISTEN", "KEY", "RHYTHM", "TYPE", "CHART", "SETTINGS"};
+    static const char *const WHAT[PG_N - 1] = {"flash cards",    "play on and on",   "send, it reads you",
+                                               "short and long", "keys are letters", "how far you are",
+                                               "speeds, keyer, ..."};
     uint32_t i;
     for (i = 0; i < PG_N - 1u; i++) {
-        int32_t y = 6 + (int32_t)i * 34 - oy;
+        int32_t y = 4 + (int32_t)i * 24 - oy;
         if (i == ui.sel)
-            cv_rect(0, y - 4, 240, 32, C_LINE);
+            cv_rect(0, y - 3, 240, 23, C_LINE);
         cv_text(12, y, &FONT_B, NAME[i], i == ui.sel ? C_WHITE : C_GRAY);
-        cv_text(12, y + 16, &FONT_XS, WHAT[i], C_DIM);
+        cv_text(112, y + 2, &FONT_XS, WHAT[i], C_DIM);
     }
 }
 
@@ -1294,6 +2214,8 @@ static void draw_main(void)
     case PG_KEY: key_page(); break;
     case PG_TYPE: type_page(); break;
     case PG_PRACTICE: main_area(practice_at); break;
+    case PG_LISTEN: main_area(listen_at); break;
+    case PG_RHYTHM: main_area(rhythm_at); break;
     case PG_CHART: main_area(chart_at); break;
     case PG_SET: main_area(set_at); break;
     default: main_area(menu_at); break;
@@ -1302,15 +2224,26 @@ static void draw_main(void)
 
 static void draw_footer(void)
 {
+    static const char *const KV_NAME[KV_N] = {"SEQ: TEXT", "SEQ: CODE", "SEQ: TIMING"};
     const char *s = "";
-    char t[40];
+    char t[64];
     const ln_card_t *c = ln_card(&pr.r);
+    uint32_t i;
     cv_begin(240, 32, C_BLACK);
     cv_rect(0, 0, 240, 1, C_LINE);
     switch (ui.page) {
     case PG_MENU: s = "SELECT move  SEL open  HOME back"; break;
-    case PG_KEY: s = "K1 speed  K3 pitch  FX mute  OCT- clear"; break;
-    case PG_TYPE: s = ui.shift ? "now: digits and signs" : "OCT- hold: 123  OCT+ del  PLAY line"; break;
+    case PG_KEY:
+        t[0] = 0;
+        text_cat(t, KV_NAME[kview()]);
+        text_cat(t, "  K4 send speed  OCT- clear");
+        s = t;
+        break;
+    case PG_RHYTHM: s = "SELECT drill  K4 send speed  PLAY again"; break;
+    case PG_LISTEN:
+        s = lhide() ? "PLAY start/stop  SEL peek  SEQ show" : "PLAY start/stop  SELECT program  SEQ hide";
+        break;
+    case PG_TYPE: s = "OCT-/+ page   REC del, hold: clear\nPLAY play/stop  SEL live/compose  SEQ code"; break;
     case PG_SET: s = "SELECT item  OCT- / OCT+ change"; break;
     case PG_CHART:
         t[0] = 0;
@@ -1335,7 +2268,18 @@ static void draw_footer(void)
         break;
     default: break;
     }
-    cv_text(8, 9, &FONT_XS, s, C_DIM);
+    for (i = 0; s[i] && s[i] != '\n'; i++)
+        ;
+    if (s[i]) {                          /* two lines */
+        char a[48];
+        uint32_t j;
+        for (j = 0; j < i && j < sizeof a - 1u; j++)
+            a[j] = s[j];
+        a[j] = 0;
+        cv_text(8, 3, &FONT_T, a, C_DIM);
+        cv_text(8, 17, &FONT_T, s + i + 1, C_DIM);
+    } else
+        cv_text(8, 9, &FONT_XS, s, C_DIM);
     cv_blit(0, 208);
 }
 
@@ -1345,8 +2289,9 @@ static int32_t lamp_y(void)              /* where this page shows the lamp, 0 no
         return 88;
     if (ui.page == PG_TYPE)
         return 112;
-    if (ui.page == PG_PRACTICE && (pr.ps == PS_CARD || pr.ps == PS_RESULT))
-        return 196;                      /* under the card (practice_at keeps above 196) */
+    if ((ui.page == PG_PRACTICE && (pr.ps == PS_CARD || pr.ps == PS_RESULT)) || ui.page == PG_RHYTHM
+        || (ui.page == PG_LISTEN && ls.on))
+        return 196;                      /* under the page (practice_at, rhythm_at, listen_at keep above 196) */
     return 0;
 }
 
@@ -1358,7 +2303,7 @@ static void draw(uint32_t now)
         draw_header(now);
     if (r & R_MAIN)
         draw_main();
-    if ((r & (R_MAIN | R_LAMP)) && lamp_y() && (ui.page == PG_PRACTICE || !(r & R_MAIN)))
+    if ((r & (R_MAIN | R_LAMP)) && lamp_y() && (lamp_y() == 196 || !(r & R_MAIN)))
         draw_lamp(lamp_y());
     if (r & R_FOOT)
         draw_footer();
@@ -1386,24 +2331,30 @@ void app_init(void)
     zero(&ui, sizeof ui);
     zero(&pr, sizeof pr);
     zero(&grid, sizeof grid);
+    zero(&tim, sizeof tim);
+    zero(&ls, sizeof ls);
+    zero(&rh, sizeof rh);
     zero(txt, sizeof txt);
     zero(dsrc, sizeof dsrc);
+    zero(&applied, sizeof applied);
     ev_w = ev_r = 0;
     own_down = ptx_down = rx_midi = rx_down = midi_down = 0;
     key_input = own_midi = ptx_midi = 0;
     saves = 0;
     dirty_at = 0;
-    if (plat_store_load(OBJ_MORSE, &rec, sizeof rec) != (int)sizeof rec || rec.magic != REC_MAGIC
-        || rec.ver != REC_VER || rec.size != sizeof rec || !set_valid(&rec.set) || !ln_valid(&rec.ln)) {
+    if (plat_store_load(OBJ_MORSE, &rec, sizeof rec) == (int)sizeof rec && rec.set.send == 0u)
+        rec.set.send = SEND_DEFAULT;     /* a 0.1 record: it had no send speed */
+    if (rec.magic != REC_MAGIC || rec.ver != REC_VER || rec.size != sizeof rec || !set_valid(&rec.set)
+        || !ln_valid(&rec.ln)) {
         zero(&rec, sizeof rec);
         set_defaults();
         ln_init(&rec.ln);
     }
-    mo_keyer_init(&keyer, SET.keyer, mo_dit_ms(SET.wpm));
+    mo_keyer_init(&keyer, SET.keyer, mo_dit_ms(SET.send));
     mo_player_init(&ptx, mo_dit_ms(SET.wpm), mo_gap_ms(SET.wpm, SET.eff));
     mo_player_init(&prx, mo_dit_ms(SET.wpm), mo_gap_ms(SET.wpm, SET.eff));
 #ifdef PLAT_HOST
-    mo_player_init(&host_hand, mo_dit_ms(SET.wpm), mo_dit_ms(SET.wpm));
+    mo_player_init(&host_hand, mo_dit_ms(SET.send), mo_dit_ms(SET.send));
 #endif
     tone_stop();
     timing_apply();
@@ -1411,6 +2362,7 @@ void app_init(void)
     ui.page = PG_PRACTICE;               /* straight into today's practice */
     ui.back = PG_PRACTICE;
     pr.ps = PS_START;
+    rhythm_hint();
 }
 
 void app_ui_init(void)
@@ -1429,6 +2381,8 @@ void app_frame(void)
     read_events();
     if (ui.page == PG_PRACTICE)
         practice_step(now);
+    if (ui.page == PG_LISTEN)
+        listen_step();
     hl_tick(&link, now, T_HELLO, T_HEARTBEAT, HELLO, 3);
     host = (uint8_t)hl_host(&link, now);
     if (host != ui.host_was) {
@@ -1449,7 +2403,7 @@ void app_frame(void)
         ui.pat_was = pat;
         ui.redraw |= R_MAIN;
     }
-    if (dirty_at && now - dirty_at > 3000u)   /* settings saved once the knobs rest */
+    if (dirty_at && (int32_t)(now - dirty_at) > 3000)   /* settings saved once the knobs rest */
         rec_save();
     lights(now);
     ann_tick(now);
@@ -1471,12 +2425,28 @@ int app_expect(const char *what, int *got)
         *got = SET.wpm;
     else if (!strcmp(what, "eff"))
         *got = SET.eff;
+    else if (!strcmp(what, "send"))
+        *got = SET.send;
     else if (!strcmp(what, "pitch"))
         *got = SET.pitch;
     else if (!strcmp(what, "keyer"))
         *got = SET.keyer;
     else if (!strcmp(what, "learn"))
         *got = SET.learn;
+    else if (!strcmp(what, "preset"))
+        *got = preset_now();
+    else if (!strcmp(what, "kview"))
+        *got = (int)kview();
+    else if (!strcmp(what, "tlabel"))
+        *got = (int)tlabel();
+    else if (!strcmp(what, "tlayout"))
+        *got = (int)tlayout();
+    else if (!strcmp(what, "tcompose"))
+        *got = (int)tcompose();
+    else if (!strcmp(what, "tpage"))
+        *got = ui.tpage;
+    else if (!strcmp(what, "line_len"))
+        *got = (int)slen(ui.line);
     else if (!strcmp(what, "host"))
         *got = hl_host(&link, plat_ms());
     else if (!strcmp(what, "ps"))
@@ -1509,6 +2479,28 @@ int app_expect(const char *what, int *got)
         *got = tone_gated(TONE_TX);
     else if (!strcmp(what, "rx"))
         *got = tone_gated(TONE_RX);
+    else if (!strcmp(what, "playing"))
+        *got = playing(&ptx);
+    else if (!strcmp(what, "tim_rows"))
+        *got = tim.count;
+    else if (!strcmp(what, "rh_n"))
+        *got = rh.n;
+    else if (!strcmp(what, "rh_sets"))
+        *got = rh.sets;
+    else if (!strcmp(what, "rh_clean"))
+        *got = rh.good_sets;
+    else if (!strcmp(what, "rh_hint"))
+        *got = rh.hint;
+    else if (!strcmp(what, "rh_sugg"))
+        *got = rh.sugg;
+    else if (!strcmp(what, "listening"))
+        *got = ls.on;
+    else if (!strcmp(what, "lines"))
+        *got = (int)ls.count;
+    else if (!strcmp(what, "prog"))
+        *got = SET.prog;
+    else if (!strcmp(what, "lhide"))
+        *got = (int)lhide();
     else
         return 0;
     return 1;
@@ -1553,7 +2545,7 @@ int app_host_cmd(const char *cmd, const char *a, const char *b, const char *c, c
         zero(txt, sizeof txt);
         return 1;
     }
-    if (!strcmp(cmd, "sendkeys")) {      /* sendkeys TEXT: keyed by hand at the set speed (_ a space) */
+    if (!strcmp(cmd, "sendkeys")) {      /* sendkeys TEXT: keyed by hand at the send speed (_ a space) */
         host_text(a, t, sizeof t);
         host_send(t);
         return 1;
@@ -1579,7 +2571,9 @@ int app_host_cmd(const char *cmd, const char *a, const char *b, const char *c, c
     if (!strcmp(cmd, "answer")) {        /* answer right|wrong: the card asked now, as a player would */
         const ln_card_t *k = ln_card(&pr.r);
         int right = !strcmp(a, "right");
-        if (pr.ps != PS_CARD || !k) {
+        if (pr.ps == PS_DONE)
+            printf("  (answer: the round is over)\n");
+        else if (pr.ps != PS_CARD || !k) {
             printf("  FAIL answer: no card asked\n");
             host_fails++;
         } else if (k->type == CARD_NEW)
