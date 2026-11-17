@@ -1,0 +1,14 @@
+# Morse's build settings (fm1-base tools/build.py)
+name = "MORSE"
+id_prefix = "FM-1_13"          # package identity: dev FM-1_1300
+usb_manufacturer = "fm1-base"
+usb_product = "MORSE FM-1"     # host/morse finds the MIDI port by "MORSE"
+o2 = []
+include = ["../common"]        # hostlink, ledfx: shared with Conductor
+tagline = "a pocket Morse code machine"
+repo = "https://github.com/daviddwlee84/M-VAVE_FM-1"
+licence = "MIT"
+credits = "Built on fm1-base by Charles Vestal. Koch order from LCWO; MIDI keying in the Vail adapter's format."
+author = "daviddwlee84"
+description = "Key Morse on the piano keys (straight key or iambic paddles) and read what you sent; type letters on the keys and hear them; learn the code with flash cards a few minutes a day, by sound, or silently by the lights. Keying goes over USB-MIDI in the Vail adapter's format."
+tags = ["utility"]

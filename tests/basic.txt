@@ -1,0 +1,318 @@
+# Morse in the host simulator: just fw-test morse
+# The SysEx below are the shared vectors in host/morse/protocol.py (VECTORS); keep them in step.
+wait 600
+shot boot.png
+expect page 1
+expect ps 0
+expect wpm 20
+expect eff 10
+expect mute 0
+expect learn 0
+expect store_writes 0
+
+# ---- the host: HELLO once a second until it answers (version 1, firmware 0.1, transport USB) ("hello")
+sysex_out
+wait 1100
+expect_sysex F0 7D 4D 4F 01 41 01 00 01 00 F7
+expect host 0
+# HELLO_ACK ("hello_ack")
+sysex F0 7D 4D 4F 01 01 01 F7
+wait 30
+expect host 1
+
+# ---- the menu: HOME, SELECT to KEY, SEL
+tap HOME
+wait 30
+expect page 0
+shot menu.png
+turn SELECT 1
+tap SEL
+wait 30
+expect page 2
+
+# ---- KEY: a straight key by hand, K (-.-) at 20 WPM (dit 60 ms)
+out
+sysex_out
+key 0 down
+wait 20
+expect tx 1
+expect_out USB 90 00 7F
+wait 160
+key 0 up
+wait 60
+key 0 down
+wait 60
+key 0 up
+wait 60
+key 0 down
+wait 180
+key 0 up
+wait 30
+expect_out USB 80 00 00
+wait 400
+expect_text own K
+# what was read goes to the host as T_CHAR ("char_k")
+expect_sysex F0 7D 4D 4F 01 43 4B F7
+# a whole word or two by a scripted hand
+sendkeys PARIS_CQ
+wait 6500
+expect_text own K_PARIS_CQ
+shot key.png
+
+# ---- received: MIDI note 0 on channel 1 (Vail's keying), a T (-)
+midi USB 90 00 7F
+wait 20
+expect rx 1
+wait 160
+midi USB 80 00 00
+wait 1500
+expect_text rx T
+# the host's text, played as received at 20/10 WPM: CQ ("text_cq")
+sysex F0 7D 4D 4F 01 02 43 51 F7
+wait 4000
+expect_text rx T_CQ
+# and stopped ("stop")
+sysex F0 7D 4D 4F 01 02 50 41 52 49 53 F7
+wait 300
+sysex F0 7D 4D 4F 01 03 F7
+wait 600
+expect rx 0
+clear_text
+
+# ---- sound and silence
+peakreset
+sendkeys EE
+wait 800
+expect peak_db_min -30
+tap FX
+wait 30
+expect mute 1
+peakreset
+sendkeys EE
+wait 800
+expect peak_db_max -90
+expect_text own EE_EE
+shot key_muted.png
+tap FX
+wait 30
+expect mute 0
+
+# ---- iambic B: the left half is dit, the right half dah; a squeeze let go in the dah adds the dit (R)
+tap HOME
+wait 30
+turn SELECT 3
+tap SEL
+wait 30
+expect page 5
+turn SELECT 3
+tap OCT+
+tap OCT+
+wait 30
+expect keyer 2
+tap HOME
+wait 30
+turn SELECT -3
+tap SEL
+wait 30
+expect page 2
+clear_text
+key 0 down
+wait 30
+key 20 down
+wait 120
+key 0 up
+key 20 up
+wait 1200
+expect_text own R
+tap HOME
+wait 30
+turn SELECT 3
+tap SEL
+wait 30
+expect page 5
+turn SELECT 3
+tap OCT-
+wait 30
+expect keyer 1
+tap OCT-
+wait 30
+expect keyer 0
+
+# ---- speed: K1, saved once the knob rests
+turn K1 2
+wait 30
+expect wpm 22
+expect eff 10
+expect saves 0
+wait 3500
+expect saves 1
+
+# ---- TYPE: white keys A..P, black keys Q..Z and a space; OCT- held for digits
+tap HOME
+wait 30
+turn SELECT -2
+tap SEL
+wait 30
+expect page 3
+# the host keeps itself known: a HELLO_ACK for each HEARTBEAT (host/morse/PROTOCOL.md)
+sysex F0 7D 4D 4F 01 01 01 F7
+out
+sysex_out
+tapkey w0
+wait 20
+expect_out USB 90 00 7F
+expect_sysex F0 7D 4D 4F 01 43 41 F7
+tapkey b0
+press OCT-
+tapkey w0
+release OCT-
+wait 2500
+expect_text typed AQ1
+shot type.png
+
+# ---- CHART
+tap HOME
+wait 30
+turn SELECT 1
+tap SEL
+wait 30
+expect page 4
+shot chart.png
+
+# ---- PRACTICE: three new letters shown, then asked; one missed comes back at the end
+tap HOME
+wait 30
+turn SELECT -3
+tap SEL
+wait 30
+expect page 1
+tap PLAY
+wait 30
+expect ps 1
+expect type 0
+shot card_new.png
+answer right
+wait 50
+answer right
+wait 50
+answer right
+wait 50
+expect type 1
+shot card_hear.png
+answer right
+wait 30
+expect ps 2
+expect right 1
+shot result_right.png
+wait 1500
+expect ps 1
+answer wrong
+wait 30
+expect right 0
+shot result_wrong.png
+wait 3000
+answer right
+wait 2000
+answer right
+wait 2000
+expect ps 3
+expect round 1
+expect answered 4
+expect streak 0
+shot done.png
+expect saves 2
+
+# ---- it all comes back after a power cycle
+reboot
+wait 600
+expect round 1
+expect wpm 22
+expect answered 4
+expect ps 0
+
+# ---- muted, by sound: the lamp's rhythm instead of sound; sending cards keyed for real
+tap FX
+wait 30
+expect mute 1
+tap PLAY
+wait 30
+expect ps 1
+answer right
+wait 50
+answer right
+wait 50
+expect ps 1
+answer_all right
+expect ps 3
+expect round 2
+expect streak 1
+shot done_muted.png
+
+# ---- a round answered as a player would: picks on the keys, and the keyed cards (send it, key what you hear)
+# keyed by a hand at 22 WPM and read by the decoder. The simulator's clock is fixed, so the round is too: 3 new,
+# then hear-and-pick (1), see-and-key (3), hear-and-key (2)
+tap FX
+wait 30
+tap PLAY
+wait 30
+answer_all right
+expect round 3
+tap PLAY
+wait 30
+expect ps 1
+expect cards 16
+wait 1500
+answer right
+wait 2500
+wait 1500
+answer right
+wait 2500
+wait 1500
+answer right
+wait 2500
+wait 1500
+answer right
+wait 2500
+wait 1500
+answer right
+wait 2500
+wait 1500
+answer right
+wait 2500
+wait 1500
+answer right
+wait 2500
+wait 1500
+answer right
+wait 2500
+wait 1500
+answer right
+wait 2500
+wait 1500
+answer right
+wait 2500
+wait 1500
+answer right
+wait 2500
+wait 1500
+answer right
+wait 2500
+wait 1500
+answer right
+wait 2500
+wait 1500
+answer right
+wait 2500
+wait 1500
+answer right
+wait 2500
+wait 1500
+answer right
+wait 2500
+expect ps 3
+expect round 4
+expect ok 13
+expect miss 0
+expect streak 3
+shot done_keyed.png
+expect store_writes <12

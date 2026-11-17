@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: MIT
+# Morse's words for a screen reader (fm1-reader): the text on the screen <TAB> what to say.
+# url: https://daviddwlee84.github.io/M-VAVE_FM-1/dev/morse/
+MORSE	morse
+WPM	words per minute
+DAH:DIT	dah to dit
+NEW LETTERS	new letters
+NEW LETTER	new letter
+WHICH ONE?	which one?
+KEY WHAT YOU HEAR	key what you hear
+KEY IT	key it
+SOUND FIRST IS FASTER LATER	learning by sound first is faster later
+OFF: WATCH THE LIGHTS	off, watch the lights
