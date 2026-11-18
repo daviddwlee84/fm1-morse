@@ -69,6 +69,14 @@
       speed. <code>&lt;SK&gt;</code> runs letters together as one prosign.</p>
     <div class="row"><input type="text" id="say" placeholder="cq cq de fm1 k" maxlength="600" disabled>
       <button id="send" disabled>Send</button> <button class="ghost" id="stop" disabled>Stop</button></div>
+    <details id="timing" style="margin-top:14px"><summary class="dim">Timing: how exactly the keying arrives</summary>
+      <p class="dim">Each press and gap the browser received, in ms: by the event's time stamp, and (after the slash) by when
+        the page got it. The FM-1's TYPE page plays exact lengths (a dit is 1200 / WPM ms, a dah three, the gap inside
+        a letter one), so play some letters there and compare. Over Bluetooth the arrival times wander by a connection
+        interval; the time stamps should not.</p>
+      <pre id="tstats" class="dim" style="white-space:pre-wrap"></pre>
+      <div class="row"><button class="ghost" id="treset">Reset</button></div>
+    </details>
   </section>
 
   <section>
@@ -206,6 +214,8 @@ function heard(s) {
   h.scrollTop = h.scrollHeight;
 }
 $("clear").onclick = () => { $("heard").textContent = ""; };
+$("treset").onclick = () => { tEdges = []; timingShow(); };
+$("timing").ontoggle = () => { if ($("timing").open) timingShow(); };
 $("copy").onclick = () => navigator.clipboard && navigator.clipboard.writeText($("heard").textContent);
 $("send").onclick = () => {
   let t = cleanText($("say").value);
@@ -217,8 +227,36 @@ $("send").onclick = () => {
 $("say").onkeydown = e => { if (e.key === "Enter") $("send").onclick(); };
 $("stop").onclick = () => out && out.send(frame(T_STOP, []));
 
+// Timing: each note-0 edge by the event's time stamp and by when it reached the page
+let tEdges = [];
+function timingEdge(down, stamp, arrived) {
+  tEdges.push([down, stamp, arrived]);
+  if (tEdges.length > 400) tEdges.shift();
+  if ($("timing").open) timingShow();
+}
+function timingShow() {
+  const marks = [], gaps = [];
+  for (let i = 1; i < tEdges.length; i++) {
+    const [a, b] = [tEdges[i - 1], tEdges[i]];
+    const span = [b[1] - a[1], b[2] - a[2]];
+    if (a[0] && !b[0]) marks.push(span);
+    else if (!a[0] && b[0] && span[0] < 150) gaps.push(span);   // gaps inside a letter
+  }
+  const sd = xs => { const m = xs.reduce((p, x) => p + x, 0) / xs.length; return [m, Math.sqrt(xs.reduce((p, x) => p + (x - m) ** 2, 0) / xs.length)]; };
+  const line = (name, xs) => {
+    if (!xs.length) return `${name}: none yet`;
+    const [ms, ss] = sd(xs.map(x => x[0])), [ma, sa] = sd(xs.map(x => x[1]));
+    return `${name} (${xs.length}): time stamp mean ${ms.toFixed(1)} sd ${ss.toFixed(1)}   arrival mean ${ma.toFixed(1)} sd ${sa.toFixed(1)}`;
+  };
+  const short = marks.filter(m => m[0] < 1.8 * Math.min(...marks.map(x => x[0]))), long = marks.filter(m => !short.includes(m));
+  $("tstats").textContent = [line("short presses", short), line("long presses", long), line("gaps inside letters", gaps),
+    "last presses: " + marks.slice(-12).map(m => `${m[0].toFixed(0)}/${m[1].toFixed(0)}`).join("  ")].join("\n");
+}
+
 function onMessage(e) {
   const d = Array.from(e.data);
+  if (d[1] === 0 && ((d[0] & 0xF0) === 0x90 || (d[0] & 0xF0) === 0x80))
+    timingEdge((d[0] & 0xF0) === 0x90 && d[2] > 0, e.timeStamp, performance.now());
   if ((d[0] & 0xF0) === 0x90 && d[1] === 0) { $("lamp").className = d[2] ? "on" : ""; return; }   // Vail keying, note 0
   if ((d[0] & 0xF0) === 0x80 && d[1] === 0) { $("lamp").className = ""; return; }
   if (d[0] !== 0xF0 || d[1] !== HEAD[0] || d[2] !== HEAD[1] || d[3] !== HEAD[2]) return;

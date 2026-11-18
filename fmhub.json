@@ -1,5 +1,5 @@
 {
-  "what": "Learn and use Morse code. Key on the piano keys (straight key or iambic paddles) and see what you sent, drill short and long presses, learn by sound with flash cards, listen to endless practice, type letters and CW phrases on the keys. Keying goes out over USB-MIDI in the Vail format.",
+  "what": "Learn and use Morse code. Key on the piano keys (straight key or iambic paddles) and see what you sent, drill short and long presses, learn by sound with flash cards, listen to endless practice, type letters and CW phrases on the keys. Keying goes out over USB-MIDI or Bluetooth MIDI in the Vail format; back up your progress from a web page.",
   "author": "Da-Wei Lee",
   "kinds": [
     "other"
