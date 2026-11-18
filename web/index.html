@@ -49,14 +49,20 @@
 <main>
   <h1>MORSE on the web</h1>
   <p class="lead">See what your FM-1 reads, send it text to copy, and back up what it has learnt in MORSE.
-    Chrome or Edge on a computer, the FM-1 running MORSE (backups: 0.4 or later) on USB, or on Bluetooth with 0.5:
-    on a Mac, connect <i>FM-1 XXXX</i> first in Audio MIDI Setup (Window, Show MIDI Studio, the Bluetooth button).
+    Chrome or Edge on a computer, the FM-1 running MORSE (backups: 0.4 or later) on USB, or on Bluetooth with 0.5.
     Nothing to install.</p>
 
   <section>
     <h2>1. Connect</h2>
-    <div class="row"><button id="connect">Connect to the FM-1</button> <span id="status" class="dim">not connected</span></div>
-    <p class="dim">The browser asks to use MIDI devices with system exclusive messages: allow it.</p>
+    <div class="row"><button id="connect">Connect to the FM-1</button>
+      <button class="ghost" id="connect-ble" hidden>Over Bluetooth, directly</button>
+      <span id="status" class="dim">not connected</span></div>
+    <p class="dim"><b>Connect</b> finds it on USB, or on Bluetooth once the computer has connected it (on a Mac: Audio
+      MIDI Setup, Window, Show MIDI Studio, the Bluetooth button). With both, USB is used. The browser asks to use MIDI
+      devices with system exclusive messages: allow it.</p>
+    <p class="dim" id="ble-note" hidden><b>Over Bluetooth, directly</b> (MORSE 0.5 or later): the browser finds the FM-1
+      itself, no system setting (Web Bluetooth). Pick <i>FM-1 XXXX</i> in the list. Only this page talks to it then:
+      Vail and other programs need <b>Connect</b>.</p>
   </section>
 
   <section>
@@ -283,27 +289,44 @@ function ready() {
 
 // Which port is the FM-1: the one whose input speaks our frames (HELLO or HEARTBEAT, once a second). Its name is
 // no guide: macOS keeps the name of the firmware it first saw on that USB device ("Felucca", "FM-1", ...).
-let midi = null, hunting = null, via = null;
+let midi = null, hunting = null, via = null, direct = null;
 function ours(d) { return d[0] === 0xF0 && d[1] === HEAD[0] && d[2] === HEAD[1] && d[3] === HEAD[2]; }
 function outputFor(input) {
   const outs = [...midi.outputs.values()];
   return outs.find(o => o.name === input.name && o.manufacturer === input.manufacturer)
       || outs.find(o => o.name === input.name) || (outs.length === 1 ? outs[0] : null);
 }
-function hunt() {
+function idle() {
   out = inp = null; firmware = null; via = null;
   $("backup").disabled = $("restore").disabled = true;
   for (const id of ["clear", "copy", "say", "send", "stop"]) $(id).disabled = true;
+}
+function hunt() {
+  idle();
   const ins = [...midi.inputs.values()];
   if (!ins.length) { status("no MIDI devices: is the FM-1 on USB (a data cable, no hub)?", "bad"); return; }
   status("looking for the FM-1 running MORSE…", "dim");
+  // every port that speaks our frames, by the link its HELLO / HEARTBEAT names; USB wins, Bluetooth waits a beat for it
+  const heardOn = new Map();
+  let waiting = null;
+  const take = () => {
+    if (inp || !heardOn.size) return;
+    const i = [...heardOn.keys()].sort((a, b) => heardOn.get(a) - heardOn.get(b))[0];
+    const o = outputFor(i);
+    if (!o) { status(`found MORSE on "${i.name}" but not its output port`, "bad"); return; }
+    for (const j of ins) j.onmidimessage = null;
+    inp = i; out = o;
+    inp.onmidimessage = onMessage;   // its next HELLO or HEARTBEAT (each second) connects
+    status("found it: connecting…", "dim");
+  };
   for (const i of ins) i.onmidimessage = e => {
-    if (inp || !ours(Array.from(e.data))) return;
-    inp = i; out = outputFor(i);
-    for (const j of ins) if (j !== i) j.onmidimessage = null;
-    if (!out) { status(`found MORSE on "${i.name}" but not its output port`, "bad"); inp = null; return; }
-    inp.onmidimessage = onMessage;
-    onMessage(e);
+    const d = Array.from(e.data);
+    if (inp || !ours(d)) return;
+    const type = d[5], pl = d.slice(6, d.length - 1);
+    const tr = type === T_HELLO ? pl[3] : type === T_HEARTBEAT ? pl[1] : undefined;
+    heardOn.set(i, tr === 1 ? 1 : 0);
+    if (tr !== 1) take();
+    else if (!waiting) waiting = setTimeout(take, 1300);
   };
   clearTimeout(hunting);
   hunting = setTimeout(() => {
@@ -314,7 +337,8 @@ function hunt() {
 $("connect").onclick = async () => {
   try {
     midi = midi || await navigator.requestMIDIAccess({ sysex: true });
-    midi.onstatechange = e => { if (e.port.state === "connected" && !inp) hunt(); };   // plugged in, restarted
+    midi.onstatechange = e => { if (e.port.state === "connected" && !inp && !direct) hunt(); };   // plugged in, restarted
+    if (direct) bleDrop();
     hunt();
   } catch (err) { status(`MIDI not available: ${err.message}`, "bad"); }
 };
@@ -365,6 +389,80 @@ $("restore").onclick = async () => {
   };
   for (const f of frames(picked)) { out.send(f); await new Promise(r => setTimeout(r, 30)); }
 };
+
+// ---- Bluetooth, directly (Web Bluetooth): BLE-MIDI packets on the MIDI service's one characteristic, no system setup.
+// Frames out as SysEx over 20-byte packets; in, SysEx and notes put back together, each timed by its BLE-MIDI
+// timestamp (13-bit ms, the FM-1's clock) mapped onto this page's clock.
+const BLE_SVC = "03b80e5a-ede8-4b33-a751-6ce34ec4c700", BLE_IO = "7772e5db-3868-4112-a1a9-f2669d106bf3", BLE_PKT = 20;
+let bleQ = Promise.resolve(), bleSx = null, bleRun = 0, bleOff = null;
+function dataLen(s) { const h = s & 0xF0; return h === 0xC0 || h === 0xD0 || s === 0xF1 || s === 0xF3 ? 1 : h < 0xF0 || s === 0xF2 ? 2 : 0; }
+function blePackets(f) {   // one SysEx frame (F0 .. F7) into BLE-MIDI packets
+  const t = Math.floor(performance.now()) & 0x1FFF, hi = 0x80 | (t >> 7 & 0x3F), lo = 0x80 | (t & 0x7F), pk = [];
+  let p = [hi, lo, 0xF0];
+  for (const b of f.slice(1, -1)) { if (p.length >= BLE_PKT) { pk.push(p); p = [hi]; } p.push(b); }
+  if (p.length + 2 > BLE_PKT) { pk.push(p); p = [hi]; }
+  p.push(lo, 0xF7); pk.push(p);
+  return pk;
+}
+function bleUnwrap(ts, arrived) {   // the FM-1's 13-bit ms, unwrapped near where this page's clock says it should be
+  const k = Math.round((arrived - (bleOff ?? arrived - ts) - ts) / 8192);
+  return k * 8192 + ts;
+}
+function bleIn(p, arrived) {
+  if (!(p[0] & 0x80)) return;
+  let hi = p[0] & 0x3F, lastLo = -1, ts = 0, i = 1;
+  const got = [], emit = m => got.push([m, ts]);
+  const stamp = lo => { if (lastLo >= 0 && lo < lastLo) hi = (hi + 1) & 0x3F; lastLo = lo; ts = hi << 7 | lo; };
+  if (bleSx) while (i < p.length && p[i] < 0x80) bleSx.push(p[i++]);   // a SysEx going on from the last packet
+  while (i < p.length) {
+    if (p[i] & 0x80) { stamp(p[i++] & 0x7F); if (i >= p.length) break; }
+    let s = p[i];
+    if (s === 0xF7 && bleSx) { bleSx.push(0xF7); emit(bleSx); bleSx = null; i++; continue; }
+    if (s < 0x80) { s = bleRun; if (!s) break; } else i++;   // running status
+    if (s === 0xF0) { bleSx = [0xF0]; while (i < p.length && p[i] < 0x80) bleSx.push(p[i++]); continue; }
+    if (s >= 0xF8) continue;   // real time
+    const n = dataLen(s);
+    if (i + n > p.length) break;
+    if (s < 0xF0) bleRun = s;
+    emit([s, ...p.slice(i, i + n)]);
+    i += n;
+  }
+  if (!got.length) return;
+  // the packet came when its newest event was sent, or later: the smallest such lag is the offset between the clocks
+  const newest = bleUnwrap(got[got.length - 1][1], arrived);
+  if (bleOff === null || arrived - newest < bleOff) bleOff = arrived - newest;
+  for (const [m, t] of got) onMessage({ data: Uint8Array.from(m), timeStamp: bleUnwrap(t, arrived) + bleOff });
+}
+function bleDrop() {
+  const d = direct; direct = null;
+  if (d && d.gatt.connected) d.gatt.disconnect();
+}
+$("connect-ble").onclick = async () => {
+  let dev;
+  try { dev = await navigator.bluetooth.requestDevice({ filters: [{ services: [BLE_SVC] }] }); }
+  catch (err) { if (err.name !== "NotFoundError") status(`Bluetooth: ${err.message}`, "bad"); return; }
+  try {
+    if (midi) for (const i of midi.inputs.values()) i.onmidimessage = null;
+    clearTimeout(hunting);
+    idle();
+    status(`connecting to ${dev.name || "the FM-1"} over Bluetooth…`, "dim");
+    const io = await (await (await dev.gatt.connect()).getPrimaryService(BLE_SVC)).getCharacteristic(BLE_IO);
+    bleSx = null; bleRun = 0; bleOff = null; bleQ = Promise.resolve();
+    io.addEventListener("characteristicvaluechanged", e =>
+      bleIn(new Uint8Array(e.target.value.buffer, e.target.value.byteOffset, e.target.value.byteLength), performance.now()));
+    dev.addEventListener("gattserverdisconnected", () => {
+      if (direct !== dev) return;
+      direct = null; idle();
+      status("Bluetooth link lost: Over Bluetooth, directly, to connect again", "bad");
+    });
+    await io.startNotifications();
+    direct = dev;
+    out = { send: f => { for (const pk of blePackets(f)) bleQ = bleQ.then(() => io.writeValueWithoutResponse(Uint8Array.from(pk))); } };
+    status("connected over Bluetooth: waiting for MORSE's HELLO…", "dim");
+    hunting = setTimeout(() => { if (direct === dev && !firmware && !via) status("connected, but MORSE said nothing: is it MORSE 0.5 or later?", "bad"); }, 3000);
+  } catch (err) { direct = null; idle(); status(`Bluetooth: ${err.message}`, "bad"); }
+};
+if (navigator.bluetooth) { $("connect-ble").hidden = false; $("ble-note").hidden = false; }
 
 if (!navigator.requestMIDIAccess) status("this browser has no Web MIDI: use Chrome or Edge", "bad");
 </script>

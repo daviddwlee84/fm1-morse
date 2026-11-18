@@ -9,7 +9,7 @@ void hl_init(hostlink_t *h, uint8_t id0, uint8_t id1, uint8_t ver)
     h->ver = ver;
     h->acked = 0;
     h->transport = HL_USB;
-    h->seen = h->sent = h->session = 0;
+    h->seen = h->sent = h->session = h->usb_shut = 0;
 }
 
 const uint8_t *hl_match(const hostlink_t *h, const uint8_t *p, uint32_t n, uint8_t *type, uint32_t *len)
@@ -129,6 +129,15 @@ void hl_tick(hostlink_t *h, uint32_t now, uint8_t hello, uint8_t heartbeat, cons
         h->acked = 0;                    /* lost: say HELLO again */
     if (h->acked && h->transport == HL_USB && plat_usb_session() != h->session)
         h->acked = 0;                    /* a new cable */
+    if (h->acked && h->transport == HL_USB) {   /* the cable out leaves the session as it was, the bus suspended */
+        if (plat_sysex_room())
+            h->usb_shut = 0;
+        else if (!h->usb_shut)
+            h->usb_shut = now ? now : 1u;
+        else if (now - h->usb_shut >= HOSTLINK_USB_GONE_MS)
+            h->acked = 0, h->usb_shut = 0;
+    } else
+        h->usb_shut = 0;
 #if FM1B_BLE
     if (h->acked && h->transport == HL_BLE && !plat_ble_connected())
         h->acked = 0;                    /* the Bluetooth link went */

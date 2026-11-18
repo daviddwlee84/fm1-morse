@@ -14,10 +14,10 @@ expect mute 0
 expect learn 0
 expect store_writes 0
 
-# ---- the host: HELLO once a second until it answers (version 1, firmware 0.4, transport USB) ("hello")
+# ---- the host: HELLO once a second until it answers (version 1, firmware 0.6, transport USB) ("hello")
 sysex_out
 wait 1100
-expect_sysex F0 7D 4D 4F 01 41 01 00 05 00 F7
+expect_sysex F0 7D 4D 4F 01 41 01 00 06 00 F7
 expect host 0
 # HELLO_ACK ("hello_ack")
 sysex F0 7D 4D 4F 01 01 01 F7
@@ -935,3 +935,16 @@ tap OCT+
 wait 30
 said BLUETOOTH ON
 expect ble_off 0
+
+# ---- 0.6: the cable out: a host on USB is gone at once (in the device, 0.5 s after USB shuts), not 10 s later
+ble disconnect
+wait 1100
+sysex F0 7D 4D 4F 01 01 01 F7
+wait 30
+expect host 1
+expect transport 0
+usb unplug
+wait 600
+expect host 0
+usb plug
+wait 1100

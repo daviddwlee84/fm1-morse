@@ -29,6 +29,8 @@
 
 #define HOSTLINK_TIMEOUT_MS 10000u
 #define HOSTLINK_EVERY_MS 1000u
+#define HOSTLINK_USB_GONE_MS 500u        /* USB can take no SysEx this long (the cable out: the bus suspended; the
+                                          * computer asleep or not reading): a host on USB is gone at once */
 #define HOSTLINK_MAX 64u                 /* the longest payload an app sends through hl_send */
 #define HOSTLINK_RX_MAX 640u             /* the longest frame taken from Bluetooth (fm1-base's APP_SYSEX limit) */
 
@@ -41,6 +43,7 @@ typedef struct {
     uint32_t seen;                       /* plat_ms of the last frame from the host (0: never) */
     uint32_t sent;                       /* plat_ms of the last HELLO / HEARTBEAT */
     uint32_t session;                    /* plat_usb_session when acked over USB: a new cable means a new HELLO */
+    uint32_t usb_shut;                   /* plat_ms since USB has had no room for SysEx (0: it has) */
 } hostlink_t;
 
 /* a SysEx frame put back together from USB-MIDI packets (Bluetooth) */

@@ -13,7 +13,7 @@
 #include "tone.c"
 
 #define FW_MAJOR 0u
-#define FW_MINOR 5u
+#define FW_MINOR 6u
 
 /* ---------------------------------------------------------------- protocol --- */
 #define MO_VER 1u
