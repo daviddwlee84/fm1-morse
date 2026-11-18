@@ -275,14 +275,24 @@ const CODES = { ".-": "A", "-...": "B", "-.-.": "C", "-..": "D", ".": "E", "..-.
   ".-.-.-": ".", "--..--": ",", "..--..": "?", ".----.": "'", "-.-.--": "!", "-..-.": "/", "-.--.": "(", "-.--.-": ")",
   ".-...": "&", "---...": ":", "-.-.-.": ";", "-...-": "=", ".-.-.": "+", "-....-": "-", "..--.-": "_", ".-..-.": "\"",
   "...-..-": "$", ".--.-.": "@", "...-.-": "<SK>", "-...-.-": "<BK>", "...---...": "<SOS>" };
-const dec = { dit: 0, lgap: 0, code: "", down: false, t: 0, up: 0, spaced: true, dits: [], dahs: [], inner: [], letter: [] };
+const dec = { dit: 0, lgap: 0, code: "", marks: [], sure: false, mn: 0, mx: 0, pend: [], down: false, t: 0, up: 0, spaced: true, dits: [], dahs: [], inner: [], letter: [] };
 function keep(a, x) { a.push(x); if (a.length > 40) a.shift(); }
 function avg(a) { return a.length ? a.reduce((p, x) => p + x, 0) / a.length : 0; }
-function decShow(s) { const d = $("decoded"); d.textContent += s; d.scrollTop = d.scrollHeight; }
+function decShow(s) {
+  if (!dec.sure) { dec.pend.push(s); return; }   // until a dit and a dah have both been heard
+  const d = $("decoded"); d.textContent += s; d.scrollTop = d.scrollHeight;
+}
+function decRead(marks) { return CODES[marks.map(x => x > 2 * dec.dit ? "-" : ".").join("")] || "·"; }
+function decSure() {   // the speed is known now: the letters held back, read by it
+  dec.sure = true;
+  const held = dec.pend; dec.pend = [];
+  for (const x of held) decShow(typeof x === "string" ? x : decRead(x));
+}
 function decLetter() {
   if (!dec.code) return;
-  decShow(CODES[dec.code] || "·");
-  dec.code = ""; dec.spaced = false;
+  if (dec.sure) decShow(CODES[dec.code] || "·"); else dec.pend.push(dec.marks.slice());
+  dec.code = ""; dec.marks = []; dec.spaced = false;
+  if (!dec.sure && dec.pend.filter(x => typeof x !== "string").length >= 4) decSure();   // all one length: take it
   decStats();
 }
 function decEdge(down, t) {
@@ -303,11 +313,17 @@ function decEdge(down, t) {
     const m = t - dec.t;
     dec.down = false; dec.up = t;
     if (m < 12 || m > 3000) return;
-    if (!dec.dit || m < 0.5 * dec.dit) dec.dit = Math.min(m, 400);   // the first, or one much shorter: a dit
+    dec.marks.push(m);
+    dec.mn = dec.mn ? Math.min(dec.mn, m) : m; dec.mx = Math.max(dec.mx, m);
+    if (!dec.dit || m < 0.5 * dec.dit) {   // the first, or one much shorter: a dit; this letter read again by it
+      dec.dit = Math.min(m, 400);
+      dec.code = dec.marks.slice(0, -1).map(x => x > 2 * dec.dit ? "-" : ".").join("");
+    }
     const dah = m > 2 * dec.dit;
     dec.code += dah ? "-" : ".";
     keep(dah ? dec.dahs : dec.dits, m);
     dec.dit = 0.8 * dec.dit + 0.2 * (dah ? m / 3 : m);
+    if (!dec.sure && dec.mx > 2.2 * dec.mn) decSure();
   }
 }
 setInterval(() => {   // silence ends a letter, then a word
@@ -331,7 +347,7 @@ function decStats() {
   }
   $("dstats").textContent = parts.join(" · ");
 }
-function decReset() { Object.assign(dec, { dit: 0, lgap: 0, code: "", down: false, t: 0, up: 0, spaced: true, dits: [], dahs: [], inner: [], letter: [] }); $("decoded").textContent = ""; $("dstats").textContent = ""; }
+function decReset() { Object.assign(dec, { dit: 0, lgap: 0, code: "", marks: [], sure: false, mn: 0, mx: 0, pend: [], down: false, t: 0, up: 0, spaced: true, dits: [], dahs: [], inner: [], letter: [] }); $("decoded").textContent = ""; $("dstats").textContent = ""; }
 
 // Timing: each note-0 edge by the event's time stamp and by when it reached the page
 let tEdges = [];
