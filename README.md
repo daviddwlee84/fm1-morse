@@ -43,6 +43,7 @@ MORSE starts on the menu (SETTINGS > START PAGE picks another page; up to 0.6 it
 |---|---|
 | `HOME` | the menu (again: back) |
 | `ALGO` | the next page |
+| `SAVE` | save the settings now (else 3 s after the last change; lit, and `*` after the page's name, until then) |
 | `FX` | sound on / off (off: read the key lights) |
 | `K1`, `K2` | hearing speed, and the spacing between letters (Farnsworth) |
 | `K3` | pitch |
@@ -142,7 +143,7 @@ From fm1-base's host simulator (`tests/basic.txt`), twice the size.
 | ![type code](docs/screens/type_code.png) TYPE: the code on the keys | ![phrases](docs/screens/type_phrases.png) TYPE: phrases | ![chart](docs/screens/chart.png) CHART |
 | ![chart edit](docs/screens/chart_edit.png) CHART: edit | ![save](docs/screens/chart_save.png) save? | ![load](docs/screens/load_ask.png) a backup to load |
 | ![settings](docs/screens/settings.png) SETTINGS | ![bluetooth](docs/screens/settings_bt.png) SETTINGS: BLUETOOTH, connected | ![start page](docs/screens/settings_start.png) SETTINGS: START PAGE |
-| ![load settings](docs/screens/load_settings.png) a backup with settings | | |
+| ![load settings](docs/screens/load_settings.png) a backup with settings | ![unsaved](docs/screens/unsaved.png) `*`: a setting not saved yet | |
 
 ## Install
 

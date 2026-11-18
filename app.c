@@ -13,7 +13,7 @@
 #include "tone.c"
 
 #define FW_MAJOR 0u
-#define FW_MINOR 7u
+#define FW_MINOR 8u
 
 /* ---------------------------------------------------------------- protocol --- */
 #define MO_VER 1u
@@ -1950,6 +1950,7 @@ static void settings_step(int32_t d)
     }
 }
 
+static void save_now(void);
 static void input(void)
 {
     uint32_t keys = plat_keys(), btn = plat_buttons(), k;
@@ -1977,7 +1978,7 @@ static void input(void)
         if (!(btn >> k & 1u) || (ui.btn >> k & 1u))
             continue;
         if (pg.edit && ui.page == PG_CHART) {   /* CHART's edit takes these */
-            if (k == B_HOME || k == B_REC || k == B_PLAY) {
+            if (k == B_HOME || k == B_REC || k == B_PLAY || k == B_SAVE) {
                 chart_save_or_leave();
                 continue;
             }
@@ -1998,6 +1999,7 @@ static void input(void)
         switch (k) {
         case B_HOME: set_page(ui.page == PG_MENU ? ui.back : PG_MENU); break;
         case B_FX: mute_toggle(); break;
+        case B_SAVE: save_now(); break;
         case B_PLAY: page_play(); break;
         case B_SEL: page_sel(); break;
         case B_SEQ:                      /* a page's view */
@@ -2110,6 +2112,16 @@ void app_input_only(void)
     read_events();
 }
 
+static void save_now(void)              /* SAVE (0.8): the settings now, not 3 s after the last change */
+{
+    if (dirty_at) {
+        rec_save();
+        app_say("SAVED", "");
+    } else
+        app_say("ALL SAVED", "NOTHING NEW");
+    ui.redraw |= R_HEAD;
+}
+
 /* ----------------------------------------------------------------- lights --- */
 static void lights(uint32_t now)
 {
@@ -2122,6 +2134,8 @@ static void lights(uint32_t now)
             ledfx_set(&bb, k, FX_GLOW, now);
     if (muted())
         ledfx_set(&bb, B_FX, FX_LIT, now);
+    if (dirty_at || (pg.edit && pg.dirty))   /* something not saved yet: SAVE lit */
+        ledfx_set(&bb, B_SAVE, FX_LIT, now);
     if (ui.page == PG_PRACTICE && pr.ps == PS_CARD && c && ln_choose(c->type)) {
         for (i = 0; i < 4u; i++)
             ledfx_set(&kb, CHOICE_KEY[i], i == pr.pick ? FX_BLINK : FX_LIT, now);
@@ -2184,8 +2198,10 @@ static void draw_header(uint32_t now)
         x = cv_text(8, 7, &FONT_B, ui.msg[0], C_WHITE);
         cv_text(x + 8, 9, &FONT_XS, ui.msg[1], C_RX);
     } else {
-        cv_text(8, 7, &FONT_B, ui.page == PG_CHART && pg.edit ? (pg.dirty ? "EDIT *" : "EDIT") : PAGE_NAME[ui.page],
-                ui.page == PG_CHART && pg.edit ? C_MEH : C_WHITE);
+        x = cv_text(8, 7, &FONT_B, ui.page == PG_CHART && pg.edit ? (pg.dirty ? "EDIT *" : "EDIT") : PAGE_NAME[ui.page],
+                    ui.page == PG_CHART && pg.edit ? C_MEH : C_WHITE);
+        if (dirty_at && !(ui.page == PG_CHART && pg.edit))   /* settings not saved yet (SAVE, or 3 s) */
+            cv_text(x + 6, 7, &FONT_B, "*", C_MEH);
         t[0] = 0;
         if (ui.page == PG_KEY || ui.page == PG_RHYTHM) {   /* the speed this page goes by */
             text_cat(t, "SEND ");
@@ -3053,7 +3069,7 @@ static void draw_footer(void)
         s = lhide() ? "PLAY start/stop  SEL peek  SEQ show" : "PLAY start/stop  SELECT program  SEQ hide";
         break;
     case PG_TYPE: s = "OCT-/+ page   REC del, hold: clear\nPLAY play/stop  SEL live/compose  SEQ code"; break;
-    case PG_SET: s = "SELECT item  OCT- / OCT+ change"; break;
+    case PG_SET: s = "SELECT item  OCT- / OCT+ change  SAVE"; break;
     case PG_CHART:
         if (pg.edit) {
             s = "OCT-/+ K1 level  K2 groups  FX all back\nPLAY/REC save  SEL hear, hold: reset all";
@@ -3235,8 +3251,10 @@ void app_frame(void)
         ui.pat_was = pat;
         ui.redraw |= R_MAIN;
     }
-    if (dirty_at && (int32_t)(now - dirty_at) > 3000)   /* settings saved once the knobs rest */
+    if (dirty_at && (int32_t)(now - dirty_at) > 3000) {   /* settings saved once the knobs rest */
         rec_save();
+        ui.redraw |= R_HEAD;
+    }
     lights(now);
     ann_tick(now);
     if (ui.redraw)
@@ -3257,6 +3275,8 @@ int app_expect(const char *what, int *got)
         *got = (int)bt_off();
     else if (!strcmp(what, "start"))
         *got = (int)start_pg();
+    else if (!strcmp(what, "unsaved"))
+        *got = dirty_at != 0;
     else if (!strcmp(what, "wpm"))
         *got = SET.wpm;
     else if (!strcmp(what, "eff"))

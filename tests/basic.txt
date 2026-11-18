@@ -19,10 +19,10 @@ expect mute 0
 expect learn 0
 expect store_writes 0
 
-# ---- the host: HELLO once a second until it answers (version 1, firmware 0.7, transport USB) ("hello")
+# ---- the host: HELLO once a second until it answers (version 1, firmware 0.8, transport USB) ("hello")
 sysex_out
 wait 1100
-expect_sysex F0 7D 4D 4F 01 41 01 00 07 00 F7
+expect_sysex F0 7D 4D 4F 01 41 01 00 08 00 F7
 expect host 0
 # HELLO_ACK ("hello_ack")
 sysex F0 7D 4D 4F 01 01 01 F7
@@ -1063,3 +1063,30 @@ wait 600
 expect host 0
 usb plug
 wait 1100
+
+# ---- 0.8: SAVE writes the settings at once, not 3 s after the last change; the header's * and the SAVE light
+# show something unsaved. Off the power before then and the change is lost
+turn K1 1
+wait 30
+expect wpm 26
+expect unsaved 1
+wait 2300
+expect unsaved 1
+shot unsaved.png
+reboot
+wait 600
+expect wpm 25
+turn K1 1
+wait 30
+expect unsaved 1
+tap SAVE
+wait 30
+said SAVED
+expect unsaved 0
+reboot
+wait 600
+expect wpm 26
+tap SAVE
+wait 30
+said ALL SAVED
+expect unsaved 0

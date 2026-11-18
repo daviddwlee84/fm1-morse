@@ -47,7 +47,7 @@
 <body>
 <main>
   <h1>MORSE cheatsheet</h1>
-  <p class="lead">Firmware 0.7, every page and button. Learn on the device, key on its piano keys, read what you sent.
+  <p class="lead">Firmware 0.8, every page and button. Learn on the device, key on its piano keys, read what you sent.
     <span class="noprint"><a href="./">MORSE on the web</a> · <a href="try/">try it in the browser</a> ·
     <a href="https://github.com/daviddwlee84/fm1-morse">source and install</a> ·
     <a href="javascript:print()">print</a></span></p>
@@ -58,6 +58,7 @@
       <table>
         <tr><td><kbd>HOME</kbd></td><td>the menu; on the menu, back where you were</td></tr>
         <tr><td><kbd>ALGO</kbd> knob</td><td>the next or previous page</td></tr>
+        <tr><td><kbd>SAVE</kbd></td><td>0.8: save the settings now; otherwise they save 3 s after the last change, and a power-off before that loses it. Lit, with an amber <code>*</code> after the page's name: not saved yet</td></tr>
         <tr><td><kbd>FX</kbd></td><td>sound on / off; off, <kbd>FX</kbd> lights and you read the key lights</td></tr>
         <tr><td><kbd>K1</kbd></td><td>hearing speed: characters at 5–40 WPM (20)</td></tr>
         <tr><td><kbd>K2</kbd></td><td>spacing (Farnsworth): letters and words pulled apart, 5 up to the hearing speed (8)</td></tr>
@@ -66,7 +67,7 @@
         <tr><td><kbd>MASTER</kbd></td><td>volume</td></tr>
       </table>
       <p class="dim">Turning a speed shows what it means (SEND 10 WPM DIT 120MS DAH 360MS). Settings save themselves
-        3 s after the last change. Not sure? SETTINGS &gt; PRESET.</p>
+        3 s after the last change, or at once with <kbd>SAVE</kbd>. Not sure? SETTINGS &gt; PRESET.</p>
     </section>
 
     <section>
@@ -156,7 +157,7 @@
         <tr><td><kbd>K2</kbd></td><td>groups open ±1</td></tr>
         <tr><td><kbd>FX</kbd></td><td>everything one box back (rusty)</td></tr>
         <tr><td><kbd>SEL</kbd> held 2 s</td><td>everything back to new</td></tr>
-        <tr><td><kbd>PLAY</kbd> / <kbd>REC</kbd></td><td>asks SAVE CHANGES?</td></tr>
+        <tr><td><kbd>PLAY</kbd> / <kbd>REC</kbd> / <kbd>SAVE</kbd></td><td>asks SAVE CHANGES?</td></tr>
       </table>
       <p class="dim">Colours: dark red just learnt, yellow halfway, green known; nearly black, not open yet.</p>
     </section>
@@ -189,6 +190,7 @@
         <tr><td><code>PC</code></td><td>a program that answers MORSE is connected (the <code>morse</code> host or MORSE on the web, USB or Bluetooth). Vail only listens, so it does not light it</td></tr>
         <tr><td><code>BT</code></td><td>grey: Bluetooth on, waiting; blue: connected</td></tr>
         <tr><td><code>MUTE</code></td><td>the sound is off</td></tr>
+        <tr><td><code>*</code> after the page, <kbd>SAVE</kbd> lit</td><td>a setting not saved yet</td></tr>
         <tr><td>all keys lit / half lit</td><td>you are sending / a signal is coming in</td></tr>
         <tr><td>four keys lit, one blinking</td><td>pick one of four; the blinking one is SELECT's</td></tr>
         <tr><td><kbd>PLAY</kbd> green</td><td>a program on the computer is connected</td></tr>
