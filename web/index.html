@@ -33,6 +33,12 @@
   #heard { min-height: 4.5em; max-height: 12em; overflow-y: auto; padding: 10px; border-radius: 8px;
            background: var(--bg); border: 1px solid var(--line); font: 1.15rem/1.5 ui-monospace, monospace;
            white-space: pre-wrap; word-break: break-word; }
+  #decoded { min-height: 3em; max-height: 9em; overflow-y: auto; padding: 10px; border-radius: 8px;
+             background: var(--bg); border: 1px dashed var(--line); font: 1.05rem/1.5 ui-monospace, monospace;
+             white-space: pre-wrap; word-break: break-word; }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: .95em; }
+  td, th { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--dim); font-weight: 600; }
   #lamp { width: 14px; height: 14px; border-radius: 50%; background: var(--line); display: inline-block; vertical-align: middle; }
   #lamp.on { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
   input[type=text] { font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line);
@@ -67,8 +73,13 @@
 
   <section>
     <h2>2. Live</h2>
-    <p class="dim">What the FM-1 reads: key on its KEY page, or type on its TYPE page. <span id="lamp" title="the key"></span></p>
+    <p class="dim">What the FM-1 reads: key on its KEY page, or type on its TYPE page (there each letter comes as you
+      press it, before it has played). <span id="lamp" title="the key"></span></p>
     <div id="heard" aria-live="polite"></div>
+    <p class="dim" style="margin-top:10px">Decoded on this page, from the keying alone (as Vail would), with the speed and
+      spacing it measures:</p>
+    <div id="decoded"></div>
+    <p id="dstats" class="dim" style="margin:6px 0 0"></p>
     <div class="row" style="margin-top:8px"><button class="ghost" id="clear" disabled>Clear</button>
       <button class="ghost" id="copy" disabled>Copy</button></div>
     <p class="dim" style="margin-top:14px">Send text: the FM-1 plays it as received (amber on its KEY page), at its hearing
@@ -87,8 +98,10 @@
 
   <section>
     <h2>3. Back up</h2>
-    <div class="row"><button id="backup" disabled>Download the progress</button></div>
-    <p class="dim">Nothing changes on the FM-1. The file is plain JSON: every letter's two boxes (0..5), the rounds.</p>
+    <div class="row"><button id="backup" disabled>Download the progress</button>
+      <button class="ghost" id="peek" disabled>Only show it</button></div>
+    <p class="dim">Nothing changes on the FM-1. The file is plain JSON: every letter's two boxes (0..5), the rounds.
+      <b>Only show it</b> reads the progress into the chart below without saving a file.</p>
   </section>
 
   <section>
@@ -96,6 +109,27 @@
     <div class="row"><label class="file" id="pick">Choose a backup file<input type="file" id="file" accept=".json,application/json"></label>
       <button id="restore" disabled>Send it to the FM-1</button></div>
     <p id="restore-note" class="dim">The FM-1 shows what it got and asks: press <b>PLAY</b> on it to load, <b>HOME</b> to keep what is there.</p>
+  </section>
+
+  <section>
+    <h2>With Vail</h2>
+    <p><a href="https://vailmorse.com/">Vail</a> is a Morse repeater in the browser: key to other people, or to its
+      decoder, and train words, call signs and QSOs at <a href="https://training.vailmorse.com/">training.vailmorse.com</a>.
+      The FM-1 is a key to it, with nothing to set up: open Vail in Chrome or Edge with the FM-1 connected (USB, or
+      Bluetooth through the system as for <b>Connect</b>), choose <i>Straight Key</i> as Vail's mode (the FM-1's own
+      keyer already times paddles), and key on the FM-1's KEY page, or play letters and phrases on its TYPE page. This
+      page can stay open beside it.</p>
+    <table>
+      <tr><th>PRESET on the FM-1</th><th>Hearing (characters / overall)</th><th>For</th></tr>
+      <tr><td>START</td><td>20 / 8 WPM</td><td>learning the letters by sound: each letter fast, long gaps between them</td></tr>
+      <tr><td>BUILDING</td><td>20 / 13</td><td>most letters known; gaps shrinking</td></tr>
+      <tr><td>QSO</td><td>22 / 18</td><td>talking to people: from here Vail's decoder joins the letters into words</td></tr>
+      <tr><td>FAST</td><td>25 / 25</td><td>standard spacing</td></tr>
+    </table>
+    <p class="dim">The second number stretches the gaps between letters (Farnsworth), not the letters. Vail's decoder
+      takes a long enough gap as a word space: in our test 20 / 14 (a gap of 6.4 dits) still gave one letter per word,
+      22 / 18 (4.8 dits) gave words. The decoder above shows the gap it measured in dits. To be read by others, use QSO or FAST, or turn <code>K2</code>
+      up to the character speed. The send speed (<code>K4</code>) only matters for paddles on the KEY page.</p>
   </section>
 
   <section id="view" hidden>
@@ -219,7 +253,7 @@ function heard(s) {
   h.textContent += s.replace(/\*/g, "·");   // * : a pattern that is no character
   h.scrollTop = h.scrollHeight;
 }
-$("clear").onclick = () => { $("heard").textContent = ""; };
+$("clear").onclick = () => { $("heard").textContent = ""; decReset(); };
 $("treset").onclick = () => { tEdges = []; timingShow(); };
 $("timing").ontoggle = () => { if ($("timing").open) timingShow(); };
 $("copy").onclick = () => navigator.clipboard && navigator.clipboard.writeText($("heard").textContent);
@@ -233,9 +267,76 @@ $("send").onclick = () => {
 $("say").onkeydown = e => { if (e.key === "Enter") $("send").onclick(); };
 $("stop").onclick = () => out && out.send(frame(T_STOP, []));
 
+// ---- a decoder of our own, from the note-0 edges' time stamps: what a listener (Vail) gets from the timing alone
+const CODES = { ".-": "A", "-...": "B", "-.-.": "C", "-..": "D", ".": "E", "..-.": "F", "--.": "G", "....": "H", "..": "I",
+  ".---": "J", "-.-": "K", ".-..": "L", "--": "M", "-.": "N", "---": "O", ".--.": "P", "--.-": "Q", ".-.": "R", "...": "S",
+  "-": "T", "..-": "U", "...-": "V", ".--": "W", "-..-": "X", "-.--": "Y", "--..": "Z", "-----": "0", ".----": "1",
+  "..---": "2", "...--": "3", "....-": "4", ".....": "5", "-....": "6", "--...": "7", "---..": "8", "----.": "9",
+  ".-.-.-": ".", "--..--": ",", "..--..": "?", ".----.": "'", "-.-.--": "!", "-..-.": "/", "-.--.": "(", "-.--.-": ")",
+  ".-...": "&", "---...": ":", "-.-.-.": ";", "-...-": "=", ".-.-.": "+", "-....-": "-", "..--.-": "_", ".-..-.": "\"",
+  "...-..-": "$", ".--.-.": "@", "...-.-": "<SK>", "-...-.-": "<BK>", "...---...": "<SOS>" };
+const dec = { dit: 0, lgap: 0, code: "", down: false, t: 0, up: 0, spaced: true, dits: [], dahs: [], inner: [], letter: [] };
+function keep(a, x) { a.push(x); if (a.length > 40) a.shift(); }
+function avg(a) { return a.length ? a.reduce((p, x) => p + x, 0) / a.length : 0; }
+function decShow(s) { const d = $("decoded"); d.textContent += s; d.scrollTop = d.scrollHeight; }
+function decLetter() {
+  if (!dec.code) return;
+  decShow(CODES[dec.code] || "·");
+  dec.code = ""; dec.spaced = false;
+  decStats();
+}
+function decEdge(down, t) {
+  if (down) {
+    if (dec.down) return;
+    if (dec.up) {
+      const g = t - dec.up;
+      if (dec.dit && g < 2 * dec.dit) keep(dec.inner, g);   // inside a letter
+      else {
+        decLetter();
+        if (!dec.lgap || g < 0.6 * dec.lgap) dec.lgap = g;   // a letter gap, unless it is a word's
+        if (g > 1.67 * dec.lgap) { if (!dec.spaced) { decShow(" "); dec.spaced = true; } }
+        else { dec.lgap = 0.8 * dec.lgap + 0.2 * g; keep(dec.letter, g); }
+      }
+    }
+    dec.down = true; dec.t = t;
+  } else if (dec.down) {
+    const m = t - dec.t;
+    dec.down = false; dec.up = t;
+    if (m < 12 || m > 3000) return;
+    if (!dec.dit || m < 0.5 * dec.dit) dec.dit = Math.min(m, 400);   // the first, or one much shorter: a dit
+    const dah = m > 2 * dec.dit;
+    dec.code += dah ? "-" : ".";
+    keep(dah ? dec.dahs : dec.dits, m);
+    dec.dit = 0.8 * dec.dit + 0.2 * (dah ? m / 3 : m);
+  }
+}
+setInterval(() => {   // silence ends a letter, then a word
+  if (dec.down || !dec.up || !dec.dit) return;
+  const idle = performance.now() - dec.up;
+  if (dec.code && idle > 2 * dec.dit) decLetter();
+  if (!dec.spaced && dec.lgap && idle > 1.67 * dec.lgap + 50) { decShow(" "); dec.spaced = true; }
+}, 40);
+function decStats() {
+  const dit = avg(dec.dits) || dec.dit, dah = avg(dec.dahs), lg = avg(dec.letter), parts = [];
+  if (!dit) return;
+  const c = 1200 / dit;
+  parts.push(`characters ${c.toFixed(1)} WPM (dit ${dit.toFixed(0)} ms)`);
+  if (dah) parts.push(`dah ${(dah / dit).toFixed(1)} dits`);
+  if (dec.inner.length) parts.push(`gap inside letters ${(avg(dec.inner) / dit).toFixed(1)} dits`);
+  if (lg) {
+    // Farnsworth (ARRL): a letter gap is 3 stretched units; 19 of them in PARIS, which takes 60/s s at s WPM overall
+    const t = 19 * (lg / 3) / 1000, s = Math.min(c, 60 * c / (t * c + 37.2));
+    parts.push(`gap between letters ${lg.toFixed(0)} ms = ${(lg / dit).toFixed(1)} dits, overall about ${s.toFixed(0)} WPM`);
+    if (lg / dit > 5.5) parts.push("long enough that Vail's decoder likely makes each letter a word");
+  }
+  $("dstats").textContent = parts.join(" · ");
+}
+function decReset() { Object.assign(dec, { dit: 0, lgap: 0, code: "", down: false, t: 0, up: 0, spaced: true, dits: [], dahs: [], inner: [], letter: [] }); $("decoded").textContent = ""; $("dstats").textContent = ""; }
+
 // Timing: each note-0 edge by the event's time stamp and by when it reached the page
 let tEdges = [];
 function timingEdge(down, stamp, arrived) {
+  decEdge(down, stamp);
   tEdges.push([down, stamp, arrived]);
   if (tEdges.length > 400) tEdges.shift();
   if ($("timing").open) timingShow();
@@ -282,7 +383,7 @@ function ready() {
   status((firmware ? `MORSE ${firmware.join(".")} connected` : "MORSE connected") + (via ? ` over ${via}` : "")
          + (old ? ": update to 0.4 for backups" : ""),
          old ? "bad" : "ok");
-  $("backup").disabled = !!old;
+  $("backup").disabled = $("peek").disabled = !!old;
   for (const id of ["clear", "copy", "say", "send", "stop"]) $(id).disabled = false;   // live works on any MORSE
   $("restore").disabled = !!old || !picked;
 }
@@ -298,7 +399,7 @@ function outputFor(input) {
 }
 function idle() {
   out = inp = null; firmware = null; via = null;
-  $("backup").disabled = $("restore").disabled = true;
+  $("backup").disabled = $("peek").disabled = $("restore").disabled = true;
   for (const id of ["clear", "copy", "say", "send", "stop"]) $(id).disabled = true;
 }
 function hunt() {
@@ -343,7 +444,7 @@ $("connect").onclick = async () => {
   } catch (err) { status(`MIDI not available: ${err.message}`, "bad"); }
 };
 
-$("backup").onclick = () => {
+function readProgress(save) {
   let buf = [], next = 0;
   status("reading…", "dim");
   const timer = setTimeout(() => { asm = null; status("the FM-1 sent nothing back (MORSE 0.4 or later?)", "bad"); }, via === "Bluetooth" ? 15000 : 5000);
@@ -358,6 +459,7 @@ $("backup").onclick = () => {
       if (w[0] !== FORMAT) throw Error(`format ${w[0]}`);
       if (crc16(w.slice(0, -2)) !== (w[WIRE_N - 2] | w[WIRE_N - 1] << 8)) throw Error("CRC mismatch");
       const p = unblob(w.slice(1, -2));
+      if (!save) { show(p, "On the FM-1 now"); ready(); return; }
       const a = document.createElement("a");
       a.href = URL.createObjectURL(new Blob([toJSON(p)], { type: "application/json" }));
       const t = new Date(), p2 = n => String(n).padStart(2, "0");
@@ -369,7 +471,9 @@ $("backup").onclick = () => {
     } catch (err) { status(`refused: ${err.message}`, "bad"); }
   };
   out.send(frame(T_PROG_REQ, []));
-};
+}
+$("backup").onclick = () => readProgress(true);
+$("peek").onclick = () => readProgress(false);
 
 $("file").onchange = async () => {
   const f = $("file").files[0]; if (!f) return;
