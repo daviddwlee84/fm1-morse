@@ -298,8 +298,9 @@ $("backup").onclick = () => {
       const p = unblob(w.slice(1, -2));
       const a = document.createElement("a");
       a.href = URL.createObjectURL(new Blob([toJSON(p)], { type: "application/json" }));
-      const t = new Date(), day = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
-      a.download = `fm1-morse-progress-${day}.json`;   // the local date, not UTC's
+      const t = new Date(), p2 = n => String(n).padStart(2, "0");
+      const at = `${t.getFullYear()}-${p2(t.getMonth() + 1)}-${p2(t.getDate())}-${p2(t.getHours())}${p2(t.getMinutes())}`;
+      a.download = `fm1-morse-progress-${at}.json`;   // local time, not UTC's: two backups a day do not collide
       a.click();
       show(p, "On the FM-1 (saved)");
       ready();
