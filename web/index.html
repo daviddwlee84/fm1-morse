@@ -57,6 +57,8 @@
   <p class="lead">See what your FM-1 reads, send it text to copy, and back up what it has learnt in MORSE.
     Chrome or Edge on a computer, the FM-1 running MORSE (backups: 0.4 or later) on USB, or on Bluetooth with 0.5.
     Nothing to install.</p>
+  <p class="row"><a href="try/">No FM-1 at hand? Try MORSE in the browser</a> <span class="dim">·</span>
+    <a href="cheatsheet.html">Cheatsheet: every page and button</a></p>
 
   <section>
     <h2>1. Connect</h2>
@@ -100,15 +102,17 @@
     <h2>3. Back up</h2>
     <div class="row"><button id="backup" disabled>Download the progress</button>
       <button class="ghost" id="peek" disabled>Only show it</button></div>
-    <p class="dim">Nothing changes on the FM-1. The file is plain JSON: every letter's two boxes (0..5), the rounds.
-      <b>Only show it</b> reads the progress into the chart below without saving a file.</p>
+    <p class="dim">Nothing changes on the FM-1. The file is plain JSON: every letter's two boxes (0..5), the rounds,
+      and from MORSE 0.7 the settings (speeds, keyer, start page, ...).
+      <b>Only show it</b> reads it into the chart below without saving a file.</p>
   </section>
 
   <section>
     <h2>4. Restore</h2>
     <div class="row"><label class="file" id="pick">Choose a backup file<input type="file" id="file" accept=".json,application/json"></label>
       <button id="restore" disabled>Send it to the FM-1</button></div>
-    <p id="restore-note" class="dim">The FM-1 shows what it got and asks: press <b>PLAY</b> on it to load, <b>HOME</b> to keep what is there.</p>
+    <p id="restore-note" class="dim">The FM-1 shows what it got and asks: press <b>PLAY</b> on it to load, <b>HOME</b> to keep what is there.
+      A file with settings loads them too on MORSE 0.7 or later; older MORSE takes the progress alone.</p>
   </section>
 
   <section>
@@ -136,6 +140,7 @@
     <h2 id="view-title">The progress</h2>
     <div id="summary" class="dim"></div>
     <div class="chart" id="chart"></div>
+    <table id="settings" hidden><tbody></tbody></table>
   </section>
 
   <p class="dim">Source and licence (GPL-3.0-or-later):
@@ -146,8 +151,14 @@
 <script>
 "use strict";
 const ORDER = "KMURESNAPTLWI.JZ=FOY,VG5/Q92H38B?47C1D60X", N = ORDER.length, GROUP = 5, TOP = 5, NEVER = 0xFFFF;
-const BLOB_N = 2 + 2 + 1 + 4 + 4 + N * 2 + N * 4, WIRE_N = 1 + BLOB_N + 2, CHUNK = 49;
-const FRAMES = Math.ceil(WIRE_N / CHUNK), FORMAT = 1;
+// format 1 (MORSE 0.4-0.6): the progress; format 2 (0.7): the settings' 12 bytes after it. Both are 6 chunks.
+const BLOB_N = 2 + 2 + 1 + 4 + 4 + N * 2 + N * 4, SET_N = 12, WIRE_N = { 1: 1 + BLOB_N + 2, 2: 1 + BLOB_N + SET_N + 2 };
+const CHUNK = 49, FRAMES = Math.ceil(WIRE_N[2] / CHUNK);
+// the settings' names in the file (host/morse/progress.py Settings, firmware/morse/app.c set_t)
+const KEYERS = ["straight", "iambic_a", "iambic_b"], PAGES = ["menu", "practice", "listen", "key", "rhythm", "type", "chart"];
+const KEY_VIEWS = ["text", "code", "timing"], TYPE_LAYOUTS = ["white_black", "a_to_z", "koch"];
+const LISTEN_PROGRAMS = ["koch", "words", "qso", "abbreviations", "text"];
+const SET_DEFAULT = { wpm: 20, eff: 8, keyer: 0, swap: 0, flags: 0, cards: 20, learn: 0, look: 0, pitch: 600, send: 10, prog: 0 };
 const HEAD = [0x7D, 0x4D, 0x4F], VER = 1;
 const T_HELLO_ACK = 0x01, T_PROG_REQ = 0x04, T_PROG_LOAD = 0x05;
 const T_HELLO = 0x41, T_HEARTBEAT = 0x42, T_PROG = 0x44, T_PROG_DONE = 0x45;
@@ -198,9 +209,46 @@ function unblob(b) {
   for (let i = 0; i < N; i++) { const a = get(2), c = get(2); p.last.push([a === NEVER ? null : a, c === NEVER ? null : c]); }
   return check(p);
 }
+function setCheck(s) {   // what the firmware's set_valid checks
+  const ok = s.wpm >= 5 && s.wpm <= 40 && s.eff >= 5 && s.eff <= s.wpm && s.keyer < KEYERS.length && s.swap <= 1
+    && s.flags < 0x20 && (s.flags >> 2 & 7) < PAGES.length && s.cards >= 10 && s.cards <= 30 && s.learn <= 1
+    && s.pitch >= 300 && s.pitch <= 1200 && s.look <= 0xFF && (s.look & 3) < KEY_VIEWS.length
+    && (s.look >> 3 & 3) < TYPE_LAYOUTS.length && s.send >= 5 && s.send <= 40 && s.prog < LISTEN_PROGRAMS.length;
+  if (!ok) throw Error("settings MORSE would refuse");
+  return s;
+}
+function setBlob(s) { setCheck(s); return [s.wpm, s.eff, s.keyer, s.swap, s.flags, s.cards, s.learn, s.look, s.pitch & 0xFF, s.pitch >> 8, s.send, s.prog]; }
+function setUnblob(b) {
+  return setCheck({ wpm: b[0], eff: b[1], keyer: b[2], swap: b[3], flags: b[4], cards: b[5], learn: b[6], look: b[7],
+                    pitch: b[8] | b[9] << 8, send: b[10], prog: b[11] });
+}
+function setToDict(s) {
+  const bit = (v, n) => !!(v >> n & 1);
+  return { hear_wpm: s.wpm, spacing_wpm: s.eff, send_wpm: s.send, pitch_hz: s.pitch, keyer: KEYERS[s.keyer],
+    paddles: s.swap ? "left_dah" : "left_dit", sound: !bit(s.flags, 0), bluetooth: !bit(s.flags, 1),
+    start_page: PAGES[s.flags >> 2 & 7], cards: s.cards, learn_by: s.learn ? "sight" : "sound",
+    judging: bit(s.look, 7) ? "strict" : "rhythm", key_view: KEY_VIEWS[s.look & 3], type_layout: TYPE_LAYOUTS[s.look >> 3 & 3],
+    type_shows_code: bit(s.look, 2), type_composes: bit(s.look, 6), listen_hides_text: bit(s.look, 5),
+    listen_program: LISTEN_PROGRAMS[s.prog] };
+}
+function setFromDict(d) {
+  const dflt = setToDict(SET_DEFAULT);
+  for (const k of Object.keys(d)) if (!(k in dflt)) throw Error(`unknown setting ${k}`);
+  const v = { ...dflt, ...d };
+  const pick = (k, names) => { const i = names.indexOf(v[k]); if (i < 0) throw Error(`${k} must be one of ${names.join(", ")}`); return i; };
+  return setCheck({ wpm: +v.hear_wpm, eff: +v.spacing_wpm, send: +v.send_wpm, pitch: +v.pitch_hz,
+    keyer: pick("keyer", KEYERS), swap: pick("paddles", ["left_dit", "left_dah"]),
+    flags: (v.sound ? 0 : 1) | (v.bluetooth ? 0 : 2) | pick("start_page", PAGES) << 2, cards: +v.cards,
+    learn: pick("learn_by", ["sound", "sight"]),
+    look: pick("key_view", KEY_VIEWS) | (v.type_shows_code ? 4 : 0) | pick("type_layout", TYPE_LAYOUTS) << 3
+      | (v.listen_hides_text ? 32 : 0) | (v.type_composes ? 64 : 0) | pick("judging", ["rhythm", "strict"]) << 7,
+    prog: pick("listen_program", LISTEN_PROGRAMS) });
+}
 function frame(type, payload) { return [0xF0, ...HEAD, VER, type, ...payload, 0xF7]; }
-function frames(p) {
-  const body = [FORMAT, ...blob(check(p))], c = crc16(body), w = [...body, c & 0xFF, c >> 8];
+function frames(p) {   // settings only to MORSE 0.7 and later (format 2); older takes the progress alone (format 1)
+  const two = p.settings && firmware && (firmware[0] > 0 || firmware[1] >= 7);
+  const body = two ? [2, ...blob(check(p)), ...setBlob(p.settings)] : [1, ...blob(check(p))];
+  const c = crc16(body), w = [...body, c & 0xFF, c >> 8];
   const f = [];
   for (let i = 0; i < FRAMES; i++) f.push(frame(T_PROG_LOAD, [i, FRAMES, ...pack7(w.slice(i * CHUNK, (i + 1) * CHUNK))]));
   return f;
@@ -209,19 +257,22 @@ function toJSON(p) {
   const chars = {};
   ORDER.split("").forEach((c, i) => chars[c] = { recognise: p.box[i][0], send: p.box[i][1],
     last_recognise: p.last[i][0], last_send: p.last[i][1] });
-  return JSON.stringify({ format: "fm1-morse-progress", version: 1, firmware: firmware ? firmware.join(".") : null,
-    round: p.round, streak: p.streak, open: p.open, answered: p.answered, right: p.right, chars }, null, 1) + "\n";
+  const d = { format: "fm1-morse-progress", version: 2, firmware: firmware ? firmware.join(".") : null,
+    round: p.round, streak: p.streak, open: p.open, answered: p.answered, right: p.right, chars };
+  if (p.settings) d.settings = setToDict(p.settings);
+  return JSON.stringify(d, null, 1) + "\n";
 }
 function fromJSON(text) {
   const d = JSON.parse(text);
   if (d.format !== "fm1-morse-progress") throw Error("not a MORSE progress file");
-  if (d.version !== 1) throw Error(`file version ${d.version}, this page knows 1`);
+  if (d.version !== 1 && d.version !== 2) throw Error(`file version ${d.version}, this page knows 1 and 2`);
   const p = { round: +d.round, streak: +(d.streak || 0), open: +d.open, answered: +(d.answered || 0),
               right: +(d.right || 0), box: [], last: [] };
   for (const c of Object.keys(d.chars || {})) if (!ORDER.includes(c)) throw Error(`${c} is not in the course`);
   for (const c of ORDER) { const e = (d.chars || {})[c] || {};
     p.box.push([+(e.recognise || 0), +(e.send || 0)]);
     p.last.push([e.last_recognise ?? null, e.last_send ?? null]); }
+  if (d.settings) p.settings = setFromDict(d.settings);
   return check(p);
 }
 function show(p, title) {
@@ -234,6 +285,13 @@ function show(p, title) {
   ORDER.split("").forEach((c, i) => { const d = document.createElement("div"); d.textContent = c;
     d.style.background = i < p.open ? `var(--l${Math.floor((p.box[i][0] + p.box[i][1]) / 2)})` : "var(--closed)";
     if (i >= p.open) d.style.color = "var(--dim)"; ch.appendChild(d); });
+  const st = $("settings"), tb = st.querySelector("tbody"); tb.innerHTML = "";
+  st.hidden = !p.settings;
+  if (p.settings) for (const [k, v] of Object.entries(setToDict(p.settings))) {
+    const tr = tb.insertRow(); tr.insertCell().textContent = k.replace(/_/g, " ");
+    tr.insertCell().textContent = typeof v === "boolean" ? (v ? "on" : "off") : String(v).replace(/_/g, " ");
+    tr.cells[0].className = "dim";
+  }
 }
 
 // ---- live: what the FM-1 reads (T_CHAR), and text for it to play (T_TEXT, T_STOP); the host's protocol.py
@@ -471,10 +529,12 @@ function readProgress(save) {
     if (next < FRAMES) return;
     asm = null; clearTimeout(timer);
     try {
-      const w = buf.slice(0, WIRE_N);
-      if (w[0] !== FORMAT) throw Error(`format ${w[0]}`);
-      if (crc16(w.slice(0, -2)) !== (w[WIRE_N - 2] | w[WIRE_N - 1] << 8)) throw Error("CRC mismatch");
-      const p = unblob(w.slice(1, -2));
+      const n = WIRE_N[buf[0]];
+      if (!n) throw Error(`format ${buf[0]}`);
+      const w = buf.slice(0, n);
+      if (crc16(w.slice(0, -2)) !== (w[n - 2] | w[n - 1] << 8)) throw Error("CRC mismatch");
+      const p = unblob(w.slice(1, 1 + BLOB_N));
+      if (buf[0] === 2) p.settings = setUnblob(w.slice(1 + BLOB_N, -2));
       if (!save) { show(p, "On the FM-1 now"); ready(); return; }
       const a = document.createElement("a");
       a.href = URL.createObjectURL(new Blob([toJSON(p)], { type: "application/json" }));

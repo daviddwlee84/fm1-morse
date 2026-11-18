@@ -1,0 +1,94 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- MORSE for the M-VAVE FM-1, tried in the browser: fm1-emu (github.com/joakimeriksson/fm1-emu) runs the release
+     package itself in WebAssembly. ?fw=morse is the package The Firmware Hub lists now, so this page follows each
+     release without a copy of its own; &embed=1 shows only the synth and its controls. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Try MORSE</title>
+<style>
+  :root { --bg: #f6f6f3; --fg: #1b1b1f; --dim: #6b6b73; --card: #ffffff; --line: #dcdcd6; --accent: #0a72c2; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #111114; --fg: #ececf0; --dim: #9a9aa6; --card: #1b1b20; --line: #2c2c34; --accent: #5ab4ff; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; }
+  main { max-width: 1120px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; }
+  p.lead { color: var(--dim); margin: 0 0 16px; }
+  a { color: var(--accent); }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin: 14px 0; }
+  h2 { font-size: 1.05rem; margin: 0 0 8px; }
+  .emu { width: 100%; aspect-ratio: 1300 / 1060; border: 0; border-radius: 10px; background: #1b1b20; display: block; }
+  .row { display: flex; gap: 10px 16px; flex-wrap: wrap; align-items: center; margin: 10px 0 0; }
+  button { font: inherit; padding: 6px 12px; border-radius: 8px; border: 1px solid var(--accent);
+           background: transparent; color: var(--accent); cursor: pointer; }
+  .dim { color: var(--dim); }
+  .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 0 14px; }
+  ol, ul { padding-left: 1.2em; margin: 6px 0; }
+  li { margin: 3px 0; }
+  code, kbd { font-family: ui-monospace, monospace; font-size: .92em; }
+  kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; background: var(--bg); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Try MORSE</h1>
+  <p class="lead">MORSE on an FM-1 in your browser: the same firmware you would install, run by the
+    <a href="https://github.com/joakimeriksson/fm1-emu">fm1-emu</a> emulator. Press <b>Start</b> on the screen, then
+    click the synth once so it hears your keyboard. Back to <a href="../">MORSE on the web</a> ·
+    <a href="../cheatsheet.html">cheatsheet</a> · <a href="https://github.com/daviddwlee84/fm1-morse">source</a>.</p>
+
+  <iframe class="emu" id="emu" title="MORSE in the FM-1 emulator" allow="autoplay; midi"
+          src="https://joakimeriksson.github.io/fm1-emu/?fw=morse&amp;embed=1"></iframe>
+  <div class="row">
+    <button id="reload" type="button">Reload the emulator</button>
+    <a id="full" href="https://joakimeriksson.github.io/fm1-emu/?fw=morse">Open it full page</a>
+    <span class="dim">Says <code>morse-….fwsc: 404</code>? A new release has just replaced the package: reload,
+      or try again in ten minutes.</span>
+  </div>
+
+  <div class="cols">
+    <section>
+      <h2>Things to try</h2>
+      <ol>
+        <li><b>Send.</b> It starts on the menu. Turn <b>SELECT</b> to KEY, press <b>SEL</b>, and key on the piano
+          keys: short presses are dits, long ones dahs. It writes what it read.</li>
+        <li><b>Hear.</b> <b>HOME</b>, then LISTEN, <b>PLAY</b>: endless practice at 20 WPM with the gaps
+          stretched (Farnsworth). <b>SELECT</b> changes the program: Koch groups, words, a QSO.</li>
+        <li><b>Learn.</b> PRACTICE, <b>PLAY</b>: flash cards by sound, five letters first (K M U R E).</li>
+        <li><b>Type.</b> TYPE: every key is a letter, digit or CW phrase; it plays them.</li>
+        <li><b>Set up.</b> SETTINGS, the last row: START PAGE, the page it starts on.</li>
+      </ol>
+    </section>
+    <section>
+      <h2>Keys on the computer</h2>
+      <ul>
+        <li>The piano keys: <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> <kbd>F</kbd> <kbd>G</kbd> <kbd>H</kbd> … are white
+          keys from C4, <kbd>W</kbd> <kbd>E</kbd> <kbd>T</kbd> … the black ones. Any of them is a straight key.</li>
+        <li>Buttons and knobs: click or drag them on the panel.</li>
+        <li>The emulator's own <a href="https://joakimeriksson.github.io/fm1-emu/#guide">guide</a> has the whole map
+          and MIDI in.</li>
+      </ul>
+      <h2>Here, not on an FM-1</h2>
+      <ul>
+        <li>No Bluetooth, and no MIDI out to <a href="https://vailmorse.com/">Vail</a>: on a real FM-1 the keying goes
+          out over USB-MIDI or Bluetooth MIDI.</li>
+        <li>What it learns is kept in this browser, not on a device. Back-ups of a real FM-1's progress are on
+          <a href="../">MORSE on the web</a>.</li>
+        <li>Timing follows your computer: a slow one makes the keying less even than the real thing.</li>
+      </ul>
+    </section>
+  </div>
+</main>
+<script>
+"use strict";
+const SRC = "https://joakimeriksson.github.io/fm1-emu/?fw=morse&embed=1";
+document.getElementById("reload").onclick = () => {   // the frame loaded again (its catalog read may still be cached)
+  document.getElementById("emu").src = `${SRC}&t=${Date.now()}`;
+};
+</script>
+</body>
+</html>

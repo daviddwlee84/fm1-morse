@@ -3,8 +3,13 @@
 # Pages: 0 MENU, 1 PRACTICE, 2 LISTEN, 3 KEY, 4 RHYTHM, 5 TYPE, 6 CHART, 7 SETTINGS. The menu lists them from
 # PRACTICE (0) and opens on the page you came from.
 wait 600
-shot boot.png
+# 0.7: it starts on SETTINGS > START PAGE, MENU unless chosen; the menu's cursor on PRACTICE, where HOME goes
+expect page 0
+expect start 0
+tap HOME
+wait 30
 expect page 1
+shot boot.png
 expect ps 0
 expect wpm 20
 expect eff 8
@@ -14,10 +19,10 @@ expect mute 0
 expect learn 0
 expect store_writes 0
 
-# ---- the host: HELLO once a second until it answers (version 1, firmware 0.6, transport USB) ("hello")
+# ---- the host: HELLO once a second until it answers (version 1, firmware 0.7, transport USB) ("hello")
 sysex_out
 wait 1100
-expect_sysex F0 7D 4D 4F 01 41 01 00 06 00 F7
+expect_sysex F0 7D 4D 4F 01 41 01 00 07 00 F7
 expect host 0
 # HELLO_ACK ("hello_ack")
 sysex F0 7D 4D 4F 01 01 01 F7
@@ -25,11 +30,11 @@ wait 30
 expect host 1
 
 # ---- the progress out, firmware 0.4 ("prog_req"): a fresh record in six chunks ("prog_fresh_0", "prog_fresh_5",
-# host/morse/progress.py VECTORS); nothing changes on the FM-1
+# host/morse/progress.py VECTORS); from 0.7 format 2, the settings after it; nothing changes on the FM-1
 sysex F0 7D 4D 4F 01 04 F7
 wait 300
-expect_sysex F0 7D 4D 4F 01 44 00 06 00 01 00 00 00 00 05 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 F7
-expect_sysex F0 7D 4D 4F 01 44 05 06 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 05 7F 51 16 F7
+expect_sysex F0 7D 4D 4F 01 44 00 06 00 02 00 00 00 00 05 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 F7
+expect_sysex F0 7D 4D 4F 01 44 05 06 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 01 7F 14 08 00 00 00 14 00 00 00 58 02 0A 00 52 00 23 F7
 expect store_writes 0
 
 # ---- the menu: HOME, SELECT to KEY, SEL
@@ -495,9 +500,13 @@ expect answered 7
 expect streak 1
 shot done.png
 
-# ---- it all comes back after a power cycle
+# ---- it all comes back after a power cycle (on the menu: START PAGE is MENU)
 reboot
 wait 600
+expect page 0
+tap HOME
+wait 30
+expect page 1
 expect round 1
 expect answered 7
 expect ps 0
@@ -841,6 +850,9 @@ reboot
 wait 600
 expect open 15
 expect round 7
+tap HOME
+wait 30
+expect page 1
 
 # ---- 0.5: Bluetooth. A computer connects over it: HELLO goes out there too (its first packet F0 7D 4D, CIN 4)
 expect ble_off 0
@@ -910,8 +922,7 @@ reboot
 wait 600
 expect ble_off 1
 expect mute 0
-tap HOME
-wait 30
+expect page 0
 turn SELECT 2
 tap SEL
 wait 30
@@ -935,6 +946,110 @@ tap OCT+
 wait 30
 said BLUETOOTH ON
 expect ble_off 0
+
+# ---- 0.7: SETTINGS > START PAGE (the 14th row): the page it starts on, saved like a setting
+turn SELECT 1
+wait 30
+tap OCT+
+wait 30
+tap OCT+
+wait 30
+tap OCT+
+wait 30
+expect start 3
+tap OCT-
+wait 30
+expect start 2
+tap OCT+
+wait 30
+wait 3500
+shot settings_start.png
+expect store_writes 17
+reboot
+wait 600
+expect page 3
+expect start 3
+expect ble_off 0
+# HOME from a start page that is not MENU: the menu, its cursor on that page
+tap HOME
+wait 30
+expect page 0
+tap HOME
+wait 30
+expect page 3
+
+# ---- 0.7: a backup with settings (format 2, "prog_v2_0" .. "prog_v2_5"): IAMBIC B at 25/25, send 18, START PAGE
+# KEY; HOME keeps all of it as it is
+sysex_out
+sysex F0 7D 4D 4F 01 05 00 06 00 02 07 00 02 00 0F 64 00 00 00 00 5A 00 00 00 00 03 02 03 02 03 02 03 00 02 03 02 03 02 03 02 00 03 02 03 02 03 02 03 00 02 03 02 03 02 03 02 00 03 02 00 00 00 00 00 F7
+wait 40
+sysex F0 7D 4D 4F 01 05 01 06 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 06 00 F7
+wait 40
+sysex F0 7D 4D 4F 01 05 02 06 00 06 00 06 00 06 00 06 00 00 06 00 06 00 06 00 00 06 00 06 00 06 00 06 00 00 06 00 06 00 06 00 00 06 00 06 00 06 00 06 00 00 06 00 06 00 06 00 00 06 00 06 00 06 00 06 F7
+wait 40
+sysex F0 7D 4D 4F 01 05 03 06 00 00 06 00 06 00 06 00 7C 06 00 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F F7
+wait 40
+sysex F0 7D 4D 4F 01 05 04 06 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F F7
+wait 40
+sysex F0 7D 4D 4F 01 05 05 06 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 01 7F 19 19 02 00 0C 14 00 00 00 58 02 12 00 19 01 27 F7
+wait 40
+wait 100
+expect ask 2
+tap HOME
+wait 50
+expect ask 0
+expect_sysex F0 7D 4D 4F 01 45 01 F7
+expect wpm 20
+expect keyer 0
+# START PAGE MENU, then the same backup, PLAY: the progress and the settings
+tap HOME
+wait 30
+turn SELECT 4
+tap SEL
+wait 30
+expect page 7
+turn SELECT -1
+wait 30
+tap OCT-
+wait 30
+tap OCT-
+wait 30
+tap OCT-
+wait 30
+expect start 0
+wait 2500
+sysex F0 7D 4D 4F 01 05 00 06 00 02 07 00 02 00 0F 64 00 00 00 00 5A 00 00 00 00 03 02 03 02 03 02 03 00 02 03 02 03 02 03 02 00 03 02 03 02 03 02 03 00 02 03 02 03 02 03 02 00 03 02 00 00 00 00 00 F7
+wait 40
+sysex F0 7D 4D 4F 01 05 01 06 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 06 00 F7
+wait 40
+sysex F0 7D 4D 4F 01 05 02 06 00 06 00 06 00 06 00 06 00 00 06 00 06 00 06 00 00 06 00 06 00 06 00 06 00 00 06 00 06 00 06 00 00 06 00 06 00 06 00 06 00 00 06 00 06 00 06 00 00 06 00 06 00 06 00 06 F7
+wait 40
+sysex F0 7D 4D 4F 01 05 03 06 00 00 06 00 06 00 06 00 7C 06 00 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F F7
+wait 40
+sysex F0 7D 4D 4F 01 05 04 06 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F F7
+wait 40
+sysex F0 7D 4D 4F 01 05 05 06 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 7F 01 7F 19 19 02 00 0C 14 00 00 00 58 02 12 00 19 01 27 F7
+wait 40
+wait 100
+expect ask 2
+shot load_settings.png
+tap PLAY
+wait 50
+expect ask 0
+expect_sysex F0 7D 4D 4F 01 45 00 F7
+said LOADED
+expect round 7
+expect open 15
+expect wpm 25
+expect eff 25
+expect send 18
+expect keyer 2
+expect start 3
+wait 3500
+reboot
+wait 600
+expect page 3
+expect keyer 2
 
 # ---- 0.6: the cable out: a host on USB is gone at once (in the device, 0.5 s after USB shuts), not 10 s later
 ble disconnect

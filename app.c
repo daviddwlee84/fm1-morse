@@ -13,18 +13,22 @@
 #include "tone.c"
 
 #define FW_MAJOR 0u
-#define FW_MINOR 6u
+#define FW_MINOR 7u
 
 /* ---------------------------------------------------------------- protocol --- */
 #define MO_VER 1u
 enum { T_HELLO_ACK = 0x01, T_TEXT, T_STOP, T_PROG_REQ, T_PROG_LOAD };   /* PROG: firmware 0.4 and later */
 enum { T_HELLO = 0x41, T_HEARTBEAT, T_CHAR, T_PROG, T_PROG_DONE };
-/* a progress backup on the wire: a format byte, ln_blob's bytes, a CRC-16/CCITT of both; cut into chunks of
- * PROG_CHUNK bytes, each frame <index> <count> and the chunk with its high bits gathered (8 bytes for each 7) */
-#define PROG_FORMAT 1u
-#define PROG_N (1u + LN_BLOB_N + 2u)
+/* a progress backup on the wire: a format byte, ln_blob's bytes, (format 2, firmware 0.7) the settings' PROG_SET_N
+ * bytes, a CRC-16/CCITT of all before it; cut into chunks of PROG_CHUNK bytes, each frame <index> <count> and the
+ * chunk with its high bits gathered (8 bytes for each 7). Both formats are 6 frames; 0.7 sends 2 and loads either */
+#define PROG_FORMAT 2u
+#define PROG_SET_N 12u                   /* set_blob: wpm eff keyer swap flags cards learn look pitch(u16 LE) send prog */
+#define PROG_N1 (1u + LN_BLOB_N + 2u)
+#define PROG_N (1u + LN_BLOB_N + PROG_SET_N + 2u)
 #define PROG_CHUNK 49u
 #define PROG_FRAMES ((PROG_N + PROG_CHUNK - 1u) / PROG_CHUNK)
+typedef char prog_formats_same_frames[(PROG_N1 + PROG_CHUNK - 1u) / PROG_CHUNK == PROG_FRAMES ? 1 : -1];
 enum { PD_LOADED, PD_DECLINED, PD_BAD };   /* T_PROG_DONE's answer to a load */
 /* Vail's MIDI keying (vail-adapter docs/MIDI_INTEGRATION_SPEC.md): channel 1, note 0 a timed key-down */
 #define MIDI_KEY_ON (0x09u | 0x90u << 8 | 0x00u << 16 | 0x7Fu << 24)
@@ -50,8 +54,11 @@ typedef struct {
     uint8_t eff;                         /* hearing: effective speed (Farnsworth) 5..wpm */
     uint8_t keyer;                       /* MO_STRAIGHT, MO_IAMBIC_A, MO_IAMBIC_B */
     uint8_t swap;                        /* paddles: 0 left half dit, 1 left half dah */
-    uint8_t mute;                        /* bit 0 the sound off (the lights keep the rhythm), bit 1 Bluetooth off
-                                          * (0.5; a 0.4 record has it 0: on) */
+    uint8_t flags;                       /* bit 0 the sound off (the lights keep the rhythm), bit 1 Bluetooth off
+                                          * (0.5; a 0.4 record has it 0: on), bits 2-4 the page it starts on
+                                          * (0.7: a PG_* below PG_SET; 0, MENU, in an older record), bits 5-7 0.
+                                          * Named mute before 0.7; 0.6 takes only 0..3, so a start page other than
+                                          * MENU makes 0.6 start over (progress too) */
     uint8_t cards;                       /* per round 10..30 */
     uint8_t learn;                       /* LM_* */
     uint8_t look;                        /* bits 0-1 KEY's view (KV_*), bit 2 TYPE's keys show the code, bits 3-4
@@ -79,8 +86,11 @@ static uint32_t tlayout(void) { return SET.look >> 3 & 3u; }
 static uint32_t lhide(void) { return SET.look >> 5 & 1u; }
 static uint32_t tcompose(void) { return SET.look >> 6 & 1u; }
 static uint32_t strict(void) { return SET.look >> 7 & 1u; }
-static uint32_t muted(void) { return SET.mute & 1u; }
-static uint32_t bt_off(void) { return SET.mute >> 1 & 1u; }
+static uint32_t muted(void) { return SET.flags & 1u; }
+static uint32_t bt_off(void) { return SET.flags >> 1 & 1u; }
+#define START_N 7u                       /* start pages: PG_MENU .. PG_CHART (the enum below; SETTINGS is not one) */
+static uint32_t start_pg(void) { return SET.flags >> 2 & 7u; }
+static int flags_valid(uint32_t f) { return f < 0x20u && (f >> 2 & 7u) < START_N; }
 static void look_set(uint32_t shift, uint32_t mask, uint32_t v)
 {
     SET.look = (uint8_t)((SET.look & ~(mask << shift)) | (v & mask) << shift);
@@ -92,7 +102,7 @@ static void set_defaults(void)          /* the START preset: Koch's characters a
     SET.eff = 8;
     SET.keyer = MO_STRAIGHT;
     SET.swap = 0;
-    SET.mute = 0;
+    SET.flags = 0;
     SET.cards = 20;
     SET.learn = LM_SOUND;
     SET.look = 0;
@@ -104,7 +114,7 @@ static void set_defaults(void)          /* the START preset: Koch's characters a
 static int set_valid(const set_t *s)
 {
     return s->wpm >= 5u && s->wpm <= 40u && s->eff >= 5u && s->eff <= s->wpm && s->keyer < MO_NKEYER && s->swap <= 1u
-           && s->mute <= 3u && s->cards >= 10u && s->cards <= 30u && s->learn <= LM_VISUAL && s->pitch >= 300u
+           && flags_valid(s->flags) && s->cards >= 10u && s->cards <= 30u && s->learn <= LM_VISUAL && s->pitch >= 300u
            && s->pitch <= 1200u && (s->look & 3u) < KV_N && (s->look >> 3 & 3u) < TL_N
            && s->send >= 5u && s->send <= 40u && s->prog < LP_N;
 }
@@ -125,6 +135,8 @@ static void rec_save(void)
 /* ------------------------------------------------------------------- state --- */
 enum { SRC_OWN, SRC_RX, SRC_N };         /* what this FM-1 sends; what it receives (MIDI in, the host's text) */
 enum { PG_MENU, PG_PRACTICE, PG_LISTEN, PG_KEY, PG_RHYTHM, PG_TYPE, PG_CHART, PG_SET, PG_N };
+typedef char start_n_is_pg_set[PG_SET == START_N ? 1 : -1];
+static const char *const PAGE_NAME[PG_N] = {"MENU", "PRACTICE", "LISTEN", "KEY", "RHYTHM", "TYPE", "CHART", "SETTINGS"};
 enum { PS_START, PS_CARD, PS_RESULT, PS_DONE };
 
 /* the tick's: the key, the keyer, two players (ptx: this FM-1's own playing, prompts, typed letters and listening;
@@ -238,6 +250,8 @@ static struct {
     uint8_t edit, dirty;                 /* CHART: editing a copy, changed */
     uint32_t sel_t;                      /* CHART edit: SEL went down at (held: reset), 0 up */
     ln_state_t draft;                    /* CHART's copy; ASK_LOAD's backup */
+    uint8_t draft_has_set;               /* ASK_LOAD: the backup carries settings (format 2) */
+    set_t draft_set;
 } pg;
 
 static struct {                          /* a progress backup going out, coming in */
@@ -769,14 +783,14 @@ int morse_ble_off(void)
 {
     static rec_t r;
     if (plat_store_load(OBJ_MORSE, &r, sizeof r) != (int)sizeof r || r.magic != REC_MAGIC || r.ver != REC_VER
-        || r.size != sizeof r || r.set.mute > 3u)
+        || r.size != sizeof r || !flags_valid(r.set.flags))
         return 0;
-    return r.set.mute >> 1 & 1;
+    return r.set.flags >> 1 & 1;
 }
 
 static void ble_toggle(void)
 {
-    SET.mute ^= 2u;
+    SET.flags ^= 2u;
     set_changed();
 #if FM1B_BLE
     plat_ble_enable(!bt_off());
@@ -1118,8 +1132,15 @@ static void ask_yes(void)
         if (pr.active || pr.ps != PS_START)
             practice_leave();
         rec.ln = pg.draft;
+        if (pg.draft_has_set) {          /* the settings too: retimed now, START PAGE from the next start */
+            SET = pg.draft_set;
+            timing_apply();
+#if FM1B_BLE
+            plat_ble_enable(!bt_off());
+#endif
+        }
         rec_save();
-        app_say("PROGRESS LOADED", "");
+        app_say(pg.draft_has_set ? "LOADED" : "PROGRESS LOADED", pg.draft_has_set ? "PROGRESS + SETTINGS" : "");
         prog_done(PD_LOADED);
         break;
     case ASK_PLACE:
@@ -1167,14 +1188,48 @@ static uint16_t crc16(const uint8_t *p, uint32_t n)   /* CRC-16/CCITT-FALSE */
     return c;
 }
 
-static void prog_fill(uint8_t *b)        /* PROG_N bytes: the format, the record, the CRC */
+static void set_blob(const set_t *t, uint8_t *b)   /* PROG_SET_N bytes, field by field (no padding) */
+{
+    b[0] = t->wpm;
+    b[1] = t->eff;
+    b[2] = t->keyer;
+    b[3] = t->swap;
+    b[4] = t->flags;
+    b[5] = t->cards;
+    b[6] = t->learn;
+    b[7] = t->look;
+    b[8] = (uint8_t)t->pitch;
+    b[9] = (uint8_t)(t->pitch >> 8);
+    b[10] = t->send;
+    b[11] = t->prog;
+}
+
+static int set_unblob(set_t *t, const uint8_t *b)   /* 1 when the settings make sense */
+{
+    zero(t, sizeof *t);
+    t->wpm = b[0];
+    t->eff = b[1];
+    t->keyer = b[2];
+    t->swap = b[3];
+    t->flags = b[4];
+    t->cards = b[5];
+    t->learn = b[6];
+    t->look = b[7];
+    t->pitch = (uint16_t)(b[8] | b[9] << 8);
+    t->send = b[10];
+    t->prog = b[11];
+    return set_valid(t);
+}
+
+static void prog_fill(uint8_t *b)        /* PROG_N bytes: the format, the record, the settings, the CRC */
 {
     uint16_t c;
     b[0] = PROG_FORMAT;
     ln_blob(&rec.ln, b + 1);
-    c = crc16(b, 1u + LN_BLOB_N);
-    b[1u + LN_BLOB_N] = (uint8_t)c;
-    b[2u + LN_BLOB_N] = (uint8_t)(c >> 8);
+    set_blob(&SET, b + 1u + LN_BLOB_N);
+    c = crc16(b, PROG_N - 2u);
+    b[PROG_N - 2u] = (uint8_t)c;
+    b[PROG_N - 1u] = (uint8_t)(c >> 8);
 }
 
 static uint32_t pack7(const uint8_t *in, uint32_t n, uint8_t *out)   /* each 7 bytes: their high bits, then them */
@@ -1221,7 +1276,7 @@ static void prog_pump(void)              /* the backup out, a frame each main-lo
 
 static void prog_in(const uint8_t *d, uint32_t len)   /* a chunk of a backup to load */
 {
-    uint32_t i, off;
+    uint32_t i, off, n;
     uint16_t c;
     if (len < 3u || d[1] != PROG_FRAMES || d[0] >= PROG_FRAMES) {
         prog_done(PD_BAD);
@@ -1240,15 +1295,18 @@ static void prog_in(const uint8_t *d, uint32_t len)   /* a chunk of a backup to 
     if (prog.rx_next < PROG_FRAMES)
         return;
     prog.rx_next = 0;
-    c = crc16(prog.buf, 1u + LN_BLOB_N);
+    n = prog.buf[0] == 1u ? PROG_N1 : PROG_N;   /* format 1 (0.4-0.6): the progress alone */
+    c = crc16(prog.buf, n - 2u);
     if (pg.ask && pg.ask != ASK_LOAD) {  /* another question is up: answer that first */
         prog_done(PD_DECLINED);
         return;
     }
     if (pg.edit)
         chart_edit_off("EDIT DROPPED");
-    i = prog.buf[0] == PROG_FORMAT && prog.buf[1u + LN_BLOB_N] == (uint8_t)c
-        && prog.buf[2u + LN_BLOB_N] == (uint8_t)(c >> 8) && ln_unblob(&pg.draft, prog.buf + 1);
+    pg.draft_has_set = prog.buf[0] == PROG_FORMAT;
+    i = (prog.buf[0] == 1u || prog.buf[0] == PROG_FORMAT) && prog.buf[n - 2u] == (uint8_t)c
+        && prog.buf[n - 1u] == (uint8_t)(c >> 8) && ln_unblob(&pg.draft, prog.buf + 1)
+        && (!pg.draft_has_set || set_unblob(&pg.draft_set, prog.buf + 1u + LN_BLOB_N));
     if (!i) {
         prog_done(PD_BAD);
         app_say("BACKUP REFUSED", "IT DOES NOT CHECK OUT");
@@ -1687,7 +1745,7 @@ static void page_sel(void)               /* SEL: choose, skip, switch */
     }
 }
 
-#define SET_ITEMS 13u
+#define SET_ITEMS 14u
 static void page_select(int32_t e)       /* SELECT turned */
 {
     int32_t d = e > 0 ? 1 : -1;
@@ -1804,7 +1862,7 @@ static void pitch(int32_t d)
 
 static void mute_toggle(void)
 {
-    SET.mute ^= 1u;
+    SET.flags ^= 1u;
     set_changed();
     app_say("SOUND", muted() ? "OFF: WATCH THE LIGHTS" : "ON");
 }
@@ -1845,7 +1903,7 @@ static void preset_step(int32_t d)
 /* the settings page: SELECT moves, OCT- / OCT+ (or SEL) change */
 static const char *const SET_NAME[SET_ITEMS] = {"PRESET", "HEAR SPEED", "SPACING", "SEND SPEED", "PITCH",    "KEYER",
                                                 "PADDLES", "SOUND",     "CARDS",   "LEARN BY",   "JUDGING",
-                                                "TYPE KEYS", "BLUETOOTH"};
+                                                "TYPE KEYS", "BLUETOOTH", "START PAGE"};
 static void settings_step(int32_t d)
 {
     switch (ui.sel) {
@@ -1883,6 +1941,10 @@ static void settings_step(int32_t d)
         look_changed();
         break;
     case 12: ble_toggle(); break;
+    case 13:
+        SET.flags = (uint8_t)((SET.flags & ~0x1Cu) | wrap(start_pg(), d, START_N) << 2);
+        set_changed();
+        break;
     default:
         break;
     }
@@ -2115,7 +2177,6 @@ static void text_c(int32_t cx, int32_t y, const felucca_font_t *f, const char *s
 
 static void draw_header(uint32_t now)
 {
-    static const char *const PAGE[PG_N] = {"MENU", "PRACTICE", "LISTEN", "KEY", "RHYTHM", "TYPE", "CHART", "SETTINGS"};
     char t[24];
     int32_t x;
     cv_begin(240, 32, C_BLACK);
@@ -2123,7 +2184,7 @@ static void draw_header(uint32_t now)
         x = cv_text(8, 7, &FONT_B, ui.msg[0], C_WHITE);
         cv_text(x + 8, 9, &FONT_XS, ui.msg[1], C_RX);
     } else {
-        cv_text(8, 7, &FONT_B, ui.page == PG_CHART && pg.edit ? (pg.dirty ? "EDIT *" : "EDIT") : PAGE[ui.page],
+        cv_text(8, 7, &FONT_B, ui.page == PG_CHART && pg.edit ? (pg.dirty ? "EDIT *" : "EDIT") : PAGE_NAME[ui.page],
                 ui.page == PG_CHART && pg.edit ? C_MEH : C_WHITE);
         t[0] = 0;
         if (ui.page == PG_KEY || ui.page == PG_RHYTHM) {   /* the speed this page goes by */
@@ -2832,6 +2893,7 @@ static void chart_at(int32_t oy)         /* the course like a kana chart: 7 x 6,
     }
 }
 
+#define MAIN_H 176                      /* the page between the header and the footer */
 static void set_at(int32_t oy)
 {
     static const char *const KEYER[MO_NKEYER] = {"STRAIGHT", "IAMBIC A", "IAMBIC B"};
@@ -2841,6 +2903,8 @@ static void set_at(int32_t oy)
     int32_t top = ui.sel > 11u ? (int32_t)(ui.sel - 11u) * 14 : 0;   /* twelve rows fit: scrolled for the rest */
     for (i = 0; i < SET_ITEMS; i++) {
         int32_t y = 1 + (int32_t)i * 14 - oy - top;
+        if (y + oy < 0 || y + oy + 13 > MAIN_H)   /* only whole rows */
+            continue;
         if (i == ui.sel)
             cv_rect(0, y - 1, 240, 14, C_LINE);
         cv_text(8, y, &FONT_XS, SET_NAME[i], C_GRAY);
@@ -2876,6 +2940,7 @@ static void set_at(int32_t oy)
             text_cat(t, !FM1B_BLE ? "NOT IN THIS BUILD" : bt_off() ? "OFF" : !plat_ble_connected() ? "ON (NOT CONNECTED)"
                         : hl_host(&link, plat_ms()) && link.transport == HL_BLE ? "ON (TALKING)" : "ON (CONNECTED)");
             break;
+        case 13: text_cat(t, PAGE_NAME[start_pg()]); break;
         default: break;
         }
         cv_text(96, y, &FONT_XS, t, i == ui.sel ? C_WHITE : C_RX);
@@ -2898,7 +2963,6 @@ static void menu_at(int32_t oy)
     }
 }
 
-#define MAIN_H 176
 static void main_area(void (*fn)(int32_t oy))
 {
     cv_begin(240, MAIN_H / 2, C_BLACK);
@@ -2940,7 +3004,8 @@ static void ask_at(int32_t oy)           /* a question about the progress */
         int_cat(t, (int32_t)s->right);
         text_cat(t, " RIGHT");
         text_c(120, 66 - oy, &FONT_XS, t, C_GRAY);
-        text_c(120, 84 - oy, &FONT_XS, pg.ask == ASK_LOAD ? "replaces the progress here" : "the progress as edited",
+        text_c(120, 84 - oy, &FONT_XS, pg.ask != ASK_LOAD ? "the progress as edited"
+               : pg.draft_has_set ? "replaces the progress + settings" : "replaces the progress here",
                C_DIM);
     }
     text_c(70, 116 - oy, &FONT_B, "PLAY: YES", C_OK);
@@ -3114,10 +3179,12 @@ void app_init(void)
     tone_stop();
     timing_apply();
     hl_init(&link, 0x4D, 0x4F, MO_VER);
-    ui.page = PG_PRACTICE;               /* straight into today's practice */
-    ui.back = PG_PRACTICE;
+    ui.page = (uint8_t)start_pg();       /* SETTINGS > START PAGE: MENU unless chosen (0.6 and before: PRACTICE) */
+    ui.back = (uint8_t)(ui.page == PG_MENU ? PG_PRACTICE : ui.page);
+    ui.sel = (uint8_t)(ui.page == PG_MENU ? ui.back - 1u : 0u);
     pr.ps = PS_START;
     rhythm_hint();
+    inputs_for_page();
 }
 
 void app_ui_init(void)
@@ -3188,6 +3255,8 @@ int app_expect(const char *what, int *got)
         *got = (int)muted();
     else if (!strcmp(what, "ble_off"))
         *got = (int)bt_off();
+    else if (!strcmp(what, "start"))
+        *got = (int)start_pg();
     else if (!strcmp(what, "wpm"))
         *got = SET.wpm;
     else if (!strcmp(what, "eff"))

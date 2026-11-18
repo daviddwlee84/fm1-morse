@@ -1,0 +1,227 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- MORSE for the M-VAVE FM-1: every page and button on one sheet, printable. The Traditional Chinese one is
+     docs/dev/morse-cheatsheet.md in github.com/daviddwlee84/M-VAVE_FM-1; keep the two in step. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MORSE Cheatsheet</title>
+<style>
+  :root { --bg: #f6f6f3; --fg: #1b1b1f; --dim: #6b6b73; --card: #ffffff; --line: #dcdcd6; --accent: #0a72c2; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #111114; --fg: #ececf0; --dim: #9a9aa6; --card: #1b1b20; --line: #2c2c34; --accent: #5ab4ff; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.45 system-ui, sans-serif; }
+  main { max-width: 1120px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; }
+  p.lead { color: var(--dim); margin: 0 0 16px; }
+  a { color: var(--accent); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 12px; align-items: start; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; break-inside: avoid; }
+  section.wide { grid-column: 1 / -1; }
+  h2 { font-size: 1rem; margin: 0 0 6px; letter-spacing: .02em; }
+  table { border-collapse: collapse; width: 100%; font-size: .93em; }
+  td, th { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--dim); font-weight: 600; }
+  td:first-child { white-space: nowrap; }
+  code, kbd { font-family: ui-monospace, monospace; font-size: .92em; }
+  kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; background: var(--bg);
+        white-space: nowrap; }
+  p { margin: 6px 0; }
+  .dim { color: var(--dim); }
+  .table-scroll { overflow-x: auto; }
+  @media print {
+    :root { --bg: #fff; --fg: #000; --dim: #444; --card: #fff; --line: #bbb; --accent: #000; }
+    body { font-size: 9.5pt; }
+    main { max-width: none; padding: 0; }
+    .noprint { display: none; }
+    .grid { grid-template-columns: 1fr 1fr; gap: 6px; }
+    section { padding: 6px 8px; border-radius: 4px; }
+    a { text-decoration: none; }
+    @page { size: A4; margin: 10mm; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>MORSE cheatsheet</h1>
+  <p class="lead">Firmware 0.7, every page and button. Learn on the device, key on its piano keys, read what you sent.
+    <span class="noprint"><a href="./">MORSE on the web</a> · <a href="try/">try it in the browser</a> ·
+    <a href="https://github.com/daviddwlee84/fm1-morse">source and install</a> ·
+    <a href="javascript:print()">print</a></span></p>
+
+  <div class="grid">
+    <section>
+      <h2>Anywhere</h2>
+      <table>
+        <tr><td><kbd>HOME</kbd></td><td>the menu; on the menu, back where you were</td></tr>
+        <tr><td><kbd>ALGO</kbd> knob</td><td>the next or previous page</td></tr>
+        <tr><td><kbd>FX</kbd></td><td>sound on / off; off, <kbd>FX</kbd> lights and you read the key lights</td></tr>
+        <tr><td><kbd>K1</kbd></td><td>hearing speed: characters at 5–40 WPM (20)</td></tr>
+        <tr><td><kbd>K2</kbd></td><td>spacing (Farnsworth): letters and words pulled apart, 5 up to the hearing speed (8)</td></tr>
+        <tr><td><kbd>K3</kbd></td><td>pitch 300–1200 Hz (600); what it receives sounds a major third higher</td></tr>
+        <tr><td><kbd>K4</kbd></td><td>sending speed 5–40 WPM (10): the keyer, where KEY's decoder starts, RHYTHM's target</td></tr>
+        <tr><td><kbd>MASTER</kbd></td><td>volume</td></tr>
+      </table>
+      <p class="dim">Turning a speed shows what it means (SEND 10 WPM DIT 120MS DAH 360MS). Settings save themselves
+        3 s after the last change. Not sure? SETTINGS &gt; PRESET.</p>
+    </section>
+
+    <section>
+      <h2>PRACTICE: flash cards</h2>
+      <table>
+        <tr><td><kbd>PLAY</kbd></td><td>start a round; after the prompt, hear it again</td></tr>
+        <tr><td><kbd>SELECT</kbd></td><td>on the start page: a round, or TEST (a placement test: the next two groups once each, what you get right can be marked known)</td></tr>
+        <tr><td><kbd>E4</kbd> <kbd>F4</kbd> <kbd>G4</kbd> <kbd>A4</kbd></td><td>pick one of four: the four lit keys are the choices on the screen, left to right</td></tr>
+        <tr><td><kbd>SELECT</kbd> + <kbd>SEL</kbd></td><td>or turn to a choice (it blinks) and press SEL</td></tr>
+        <tr><td>piano keys</td><td>cards that ask you to key it: when <i>your turn</i> shows, key with the keyer you set; judged by your own rhythm (a dah about three dits), any speed</td></tr>
+        <tr><td><kbd>SEL</kbd></td><td>on a keyed card: don't know (counted wrong, the answer shows)</td></tr>
+        <tr><td>any piano key</td><td>a new letter: next card once seen and heard; an answer: go on without waiting</td></tr>
+        <tr><td><kbd>SEQ</kbd></td><td>learning by sound: a peek at the code of a new letter or an answer (hidden again on the next card; never on hear-and-choose)</td></tr>
+        <tr><td><kbd>HOME</kbd></td><td>leave; what you answered is kept</td></tr>
+      </table>
+      <p class="dim">A keyed card's result: RIGHT / ALMOST / NO, a grade, READ AS (what the decoder read), and
+        SHOULD (the standard rhythm) over YOU (what you pressed), the mark that flipped in red. ALMOST neither moves
+        the card up nor back to the start; it comes again at the end of the round. NEXT GROUP WAITS ON: the letters
+        holding back the next group.</p>
+    </section>
+
+    <section>
+      <h2>LISTEN: endless practice</h2>
+      <table>
+        <tr><td><kbd>PLAY</kbd></td><td>start / stop</td></tr>
+        <tr><td><kbd>SELECT</kbd></td><td>program: KOCH GROUPS, WORDS, QSO, ABBREVIATIONS, SAYINGS</td></tr>
+        <tr><td><kbd>SEQ</kbd></td><td>show / hide the text being played (hidden, a line shows once it has played)</td></tr>
+        <tr><td><kbd>SEL</kbd></td><td>hidden: a peek at this line</td></tr>
+      </table>
+    </section>
+
+    <section>
+      <h2>KEY: send, it reads you</h2>
+      <table>
+        <tr><td>piano keys</td><td>straight key: any key. Iambic: the left half (F3–F4) dit, the right half (F♯4–G5) dah; SETTINGS &gt; PADDLES swaps them</td></tr>
+        <tr><td><kbd>SEQ</kbd></td><td>view: TEXT → CODE (your dits and dahs under each letter) → TIMING (every mark drawn to length)</td></tr>
+        <tr><td><kbd>OCT-</kbd></td><td>clear the screen</td></tr>
+      </table>
+      <p class="dim">White is what you sent, amber what came in (MIDI, or text from the computer). The top line: the
+        speed the decoder hears, the dah:dit ratio (3.0 is standard) and the gap inside a letter (1.0); amber when far
+        off. TIMING: the grey bars are the target dit and dah, a red line a pause long enough to split a letter in two.
+        With a computer connected, the keying goes out over USB-MIDI or Bluetooth MIDI in the
+        <a href="https://vailmorse.com/">Vail</a> format.</p>
+    </section>
+
+    <section>
+      <h2>RHYTHM: short and long</h2>
+      <table>
+        <tr><td>piano keys</td><td>key to the target</td></tr>
+        <tr><td><kbd>SELECT</kbd></td><td>drill: DITS, DAHS, DIT DAH, SOS, FREE</td></tr>
+        <tr><td><kbd>PLAY</kbd></td><td>start again (the counts cleared)</td></tr>
+        <tr><td><kbd>K4</kbd></td><td>the target speed</td></tr>
+      </table>
+      <p class="dim">The frame is the target length, the bar what you pressed: green good, yellow off, red the other
+        kind. The tip below looks at the last 16 marks.</p>
+    </section>
+
+    <section>
+      <h2>TYPE: the keys are letters</h2>
+      <table>
+        <tr><td><kbd>OCT-</kbd> / <kbd>OCT+</kbd></td><td>page: letters → digits and signs → phrases</td></tr>
+        <tr><td><kbd>REC</kbd></td><td>delete the last character; held 0.6 s, the whole line</td></tr>
+        <tr><td><kbd>PLAY</kbd></td><td>play the line; while playing, stop</td></tr>
+        <tr><td><kbd>SEL</kbd></td><td>LIVE (each key plays and goes out) / COMPOSE (silent until PLAY sends the line)</td></tr>
+        <tr><td><kbd>SEQ</kbd></td><td>the code on the keys (a lookup table)</td></tr>
+      </table>
+      <div class="table-scroll"><table>
+        <tr><th>page</th><th>white keys</th><th>black keys</th></tr>
+        <tr><td>letters</td><td>A–P</td><td>Q–Z, then space</td></tr>
+        <tr><td>signs</td><td><code>1–9 0 . , ? / = +</code></td><td><code>- ( ) ' " : ; @ ! &amp; $</code></td></tr>
+        <tr><td>phrases</td><td>CQ DE K &lt;KN&gt; &lt;AR&gt; &lt;SK&gt; &lt;BT&gt; 73 TU RST 5NN QTH NAME OP UR ES</td><td>GM GE FB R QRZ? QSL &lt;BK&gt; HW? PSE AGN QRS</td></tr>
+      </table></div>
+      <p class="dim">SETTINGS &gt; TYPE KEYS changes the layout: A–Z left to right, or Koch order. A phrase's meaning
+        shows on the screen.</p>
+    </section>
+
+    <section>
+      <h2>CHART: how far you are</h2>
+      <table>
+        <tr><td><kbd>SELECT</kbd></td><td>move</td></tr>
+        <tr><td><kbd>PLAY</kbd> / <kbd>SEL</kbd></td><td>hear this letter</td></tr>
+        <tr><td><kbd>REC</kbd></td><td>EDIT (a copy: the title says <code>EDIT *</code> once changed)</td></tr>
+      </table>
+      <p><b>In EDIT</b></p>
+      <table>
+        <tr><td><kbd>OCT-</kbd> / <kbd>OCT+</kbd>, <kbd>K1</kbd></td><td>this letter's level 0–5; 0 is forgotten: it comes again as new</td></tr>
+        <tr><td><kbd>K2</kbd></td><td>groups open ±1</td></tr>
+        <tr><td><kbd>FX</kbd></td><td>everything one box back (rusty)</td></tr>
+        <tr><td><kbd>SEL</kbd> held 2 s</td><td>everything back to new</td></tr>
+        <tr><td><kbd>PLAY</kbd> / <kbd>REC</kbd></td><td>asks SAVE CHANGES?</td></tr>
+      </table>
+      <p class="dim">Colours: dark red just learnt, yellow halfway, green known; nearly black, not open yet.</p>
+    </section>
+
+    <section>
+      <h2>SETTINGS</h2>
+      <p class="dim"><kbd>SELECT</kbd> the item, <kbd>OCT-</kbd> / <kbd>OCT+</kbd> (or <kbd>SEL</kbd>) the value.
+        The list scrolls past the screen.</p>
+      <table>
+        <tr><td>PRESET</td><td>START (hear 20/8, send 10), BUILDING, QSO, FAST; CUSTOM when the speeds match none</td></tr>
+        <tr><td>HEAR SPEED</td><td>as <kbd>K1</kbd></td></tr>
+        <tr><td>SPACING</td><td>as <kbd>K2</kbd></td></tr>
+        <tr><td>SEND SPEED</td><td>as <kbd>K4</kbd></td></tr>
+        <tr><td>PITCH</td><td>as <kbd>K3</kbd></td></tr>
+        <tr><td>KEYER</td><td>STRAIGHT, IAMBIC A, IAMBIC B</td></tr>
+        <tr><td>PADDLES</td><td>LEFT DIT (left dit, right dah) or LEFT DAH</td></tr>
+        <tr><td>SOUND</td><td>ON, or OFF (the lights)</td></tr>
+        <tr><td>CARDS</td><td>10–30 a round</td></tr>
+        <tr><td>LEARN BY</td><td>SOUND (best) or SIGHT (the code shows)</td></tr>
+        <tr><td>JUDGING</td><td>BY RHYTHM (your own ratio) or STRICT (at the send speed)</td></tr>
+        <tr><td>TYPE KEYS</td><td>TYPE's layout</td></tr>
+        <tr><td>BLUETOOTH</td><td>ON or OFF, kept; beside it NOT CONNECTED, CONNECTED, or TALKING (a MORSE program or page on Bluetooth)</td></tr>
+        <tr><td>START PAGE</td><td>0.7: the page it starts on: MENU (default), PRACTICE, LISTEN, KEY, RHYTHM, TYPE, CHART</td></tr>
+      </table>
+    </section>
+
+    <section>
+      <h2>On the screen and the lights</h2>
+      <table>
+        <tr><td><code>PC</code></td><td>a program that answers MORSE is connected (the <code>morse</code> host or MORSE on the web, USB or Bluetooth). Vail only listens, so it does not light it</td></tr>
+        <tr><td><code>BT</code></td><td>grey: Bluetooth on, waiting; blue: connected</td></tr>
+        <tr><td><code>MUTE</code></td><td>the sound is off</td></tr>
+        <tr><td>all keys lit / half lit</td><td>you are sending / a signal is coming in</td></tr>
+        <tr><td>four keys lit, one blinking</td><td>pick one of four; the blinking one is SELECT's</td></tr>
+        <tr><td><kbd>PLAY</kbd> green</td><td>a program on the computer is connected</td></tr>
+      </table>
+      <p class="dim">Questions that change your progress (SAVE CHANGES?, MARK THESE KNOWN?, LOAD THIS BACKUP?) take
+        only <kbd>PLAY</kbd> (yes) and <kbd>HOME</kbd> (no).</p>
+    </section>
+
+    <section>
+      <h2>Prosigns</h2>
+      <p class="dim">Letters run together with no gap. Some share a punctuation sign's code, so decoders name them
+        differently.</p>
+      <table>
+        <tr><th>prosign</th><th>code</th><th>means</th><th>also</th></tr>
+        <tr><td>&lt;AR&gt;</td><td><code>·−·−·</code></td><td>end of message</td><td><code>+</code></td></tr>
+        <tr><td>&lt;KN&gt;</td><td><code>−·−−·</code></td><td>over, only you</td><td><code>(</code></td></tr>
+        <tr><td>&lt;BT&gt;</td><td><code>−···−</code></td><td>new paragraph, pause</td><td><code>=</code></td></tr>
+        <tr><td>&lt;SK&gt;</td><td><code>···−·−</code></td><td>end of contact</td><td>Vail: &lt;VA&gt;; the FM-1's decoder: <code>*</code></td></tr>
+        <tr><td>&lt;BK&gt;</td><td><code>−···−·−</code></td><td>break, back to you</td><td></td></tr>
+      </table>
+    </section>
+
+    <section class="wide">
+      <h2>With a computer</h2>
+      <p><a href="./">MORSE on the web</a> (Chrome or Edge, nothing to install): see what the FM-1 reads, send it
+        text to play, back up and restore your progress and, from 0.7, your settings. Over USB, or Bluetooth MIDI
+        (0.5+: on a Mac, Audio MIDI Setup → Show MIDI Studio → Bluetooth → Connect <i>FM-1 XXXX</i>, again after the
+        FM-1 restarts), or the page's own <i>Over Bluetooth, directly</i>.
+        <a href="https://vailmorse.com/">Vail</a> takes the keying as it is. The Python host
+        (<code>morse type</code>, <code>morse send</code>, <code>morse backup</code> / <code>restore</code>) is in
+        <a href="https://github.com/daviddwlee84/M-VAVE_FM-1/tree/main/host/morse">M-VAVE_FM-1</a>.</p>
+    </section>
+  </div>
+</main>
+</body>
+</html>
