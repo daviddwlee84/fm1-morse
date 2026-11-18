@@ -19,6 +19,11 @@
  * sector SLOOP, Agent Deck and CTL-1 share (docs/hardware/flash-map.md). The panel calibration is the platform's */
 enum { OBJ_PANEL, OBJ_MORSE, OBJ_NOBJ };
 #define APP_STORE_MAP {0xDC000u, 0xDA000u}
+/* Bluetooth's record is kept by the app, in RAM only (app.c app_ble_load / app_ble_save): nothing of it is written.
+ * Whether it starts at power-on: SETTINGS > BLUETOOTH, read from the record before app_init */
+#define APP_BLE_STORE
+int morse_ble_off(void);
+#define APP_BLE_AT_BOOT (!morse_ble_off())
 
 void app_init(void);
 void app_render(int32_t *lr, uint32_t n, uint32_t master_q12);

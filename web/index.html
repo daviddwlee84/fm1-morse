@@ -49,7 +49,9 @@
 <main>
   <h1>MORSE on the web</h1>
   <p class="lead">See what your FM-1 reads, send it text to copy, and back up what it has learnt in MORSE.
-    Chrome or Edge on a computer, the FM-1 on USB and running MORSE (backups: 0.4 or later). Nothing to install.</p>
+    Chrome or Edge on a computer, the FM-1 running MORSE (backups: 0.4 or later) on USB, or on Bluetooth with 0.5:
+    on a Mac, connect <i>FM-1 XXXX</i> first in Audio MIDI Setup (Window, Show MIDI Studio, the Bluetooth button).
+    Nothing to install.</p>
 
   <section>
     <h2>1. Connect</h2>
@@ -224,6 +226,8 @@ function onMessage(e) {
   if (type === T_CHAR) { heard(String.fromCharCode(...pl.filter(b => b >= 0x20 && b < 0x7F))); return; }
   if (type === T_HELLO || type === T_HEARTBEAT) {
     if (type === T_HELLO && pl.length >= 3) firmware = [pl[1], pl[2]];
+    const tr = type === T_HELLO ? pl[3] : pl[1];   // the link it talks over (0.5): 0 USB, 1 Bluetooth
+    if (tr !== undefined) via = tr === 1 ? "Bluetooth" : "USB";
     out.send(frame(T_HELLO_ACK, [VER]));
     ready();
   } else if (type === T_PROG && asm) asm(pl);
@@ -231,7 +235,8 @@ function onMessage(e) {
 }
 function ready() {
   const old = firmware && (firmware[0] === 0 && firmware[1] < 4);
-  status(firmware ? `MORSE ${firmware.join(".")} connected` + (old ? ": update to 0.4 for backups" : "") : "MORSE connected",
+  status((firmware ? `MORSE ${firmware.join(".")} connected` : "MORSE connected") + (via ? ` over ${via}` : "")
+         + (old ? ": update to 0.4 for backups" : ""),
          old ? "bad" : "ok");
   $("backup").disabled = !!old;
   for (const id of ["clear", "copy", "say", "send", "stop"]) $(id).disabled = false;   // live works on any MORSE
@@ -240,7 +245,7 @@ function ready() {
 
 // Which port is the FM-1: the one whose input speaks our frames (HELLO or HEARTBEAT, once a second). Its name is
 // no guide: macOS keeps the name of the firmware it first saw on that USB device ("Felucca", "FM-1", ...).
-let midi = null, hunting = null;
+let midi = null, hunting = null, via = null;
 function ours(d) { return d[0] === 0xF0 && d[1] === HEAD[0] && d[2] === HEAD[1] && d[3] === HEAD[2]; }
 function outputFor(input) {
   const outs = [...midi.outputs.values()];
@@ -248,7 +253,7 @@ function outputFor(input) {
       || outs.find(o => o.name === input.name) || (outs.length === 1 ? outs[0] : null);
 }
 function hunt() {
-  out = inp = null; firmware = null;
+  out = inp = null; firmware = null; via = null;
   $("backup").disabled = $("restore").disabled = true;
   for (const id of ["clear", "copy", "say", "send", "stop"]) $(id).disabled = true;
   const ins = [...midi.inputs.values()];
@@ -264,7 +269,7 @@ function hunt() {
   };
   clearTimeout(hunting);
   hunting = setTimeout(() => {
-    if (!inp) status("no FM-1 running MORSE answered: is it on, on USB, and running MORSE 0.4 or later?", "bad");
+    if (!inp) status("no FM-1 running MORSE answered: is it on, on USB (or connected over Bluetooth, 0.5), and running MORSE?", "bad");
   }, 3000);
 }
 
@@ -279,7 +284,7 @@ $("connect").onclick = async () => {
 $("backup").onclick = () => {
   let buf = [], next = 0;
   status("reading…", "dim");
-  const timer = setTimeout(() => { asm = null; status("the FM-1 sent nothing back (MORSE 0.4 or later?)", "bad"); }, 5000);
+  const timer = setTimeout(() => { asm = null; status("the FM-1 sent nothing back (MORSE 0.4 or later?)", "bad"); }, via === "Bluetooth" ? 15000 : 5000);
   asm = pl => {
     if (pl[1] !== FRAMES || pl[0] !== next) { asm = null; clearTimeout(timer); status("a chunk went missing: try again", "bad"); return; }
     if (pl[0] === 0) buf = [];

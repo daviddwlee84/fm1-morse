@@ -17,7 +17,7 @@ expect store_writes 0
 # ---- the host: HELLO once a second until it answers (version 1, firmware 0.4, transport USB) ("hello")
 sysex_out
 wait 1100
-expect_sysex F0 7D 4D 4F 01 41 01 00 04 00 F7
+expect_sysex F0 7D 4D 4F 01 41 01 00 05 00 F7
 expect host 0
 # HELLO_ACK ("hello_ack")
 sysex F0 7D 4D 4F 01 01 01 F7
@@ -841,3 +841,97 @@ reboot
 wait 600
 expect open 15
 expect round 7
+
+# ---- 0.5: Bluetooth. A computer connects over it: HELLO goes out there too (its first packet F0 7D 4D, CIN 4)
+expect ble_off 0
+wait 1000
+expect store_writes 15
+out
+ble connect
+wait 1100
+expect_out BLE F0 7D 4D
+expect_out BLE 4F 01 41
+# its answer over Bluetooth: the host is there, replies go back the same way
+ble_frame hello_ack
+wait 30
+expect host 1
+expect transport 1
+# the host's text over Bluetooth, played as received
+clear_text
+ble_frame text E
+wait 1500
+expect_text rx E
+# the progress out over Bluetooth (T_PROG 44)
+out
+ble_frame prog_req
+wait 600
+expect_out BLE 4F 01 44
+expect store_writes 15
+# KEY: own keying goes out over USB and Bluetooth
+tap HOME
+wait 30
+turn SELECT 2
+tap SEL
+wait 30
+expect page 3
+out
+key 0 down
+wait 20
+expect_out USB 90 00 7F
+expect_out BLE 90 00 7F
+wait 100
+key 0 up
+wait 30
+expect_out BLE 80 00 00
+wait 800
+# keying in over Bluetooth: a T (-)
+clear_text
+midi BLE 90 00 7F
+wait 180
+midi BLE 80 00 00
+wait 2000
+expect_text rx T
+# SETTINGS > BLUETOOTH: off, kept across a power cycle; then the keying stays off Bluetooth
+tap HOME
+wait 30
+turn SELECT 4
+tap SEL
+wait 30
+expect page 7
+turn SELECT 12
+shot settings_bt.png
+tap OCT+
+wait 30
+said BLUETOOTH OFF
+expect ble_off 1
+expect mute 0
+wait 3500
+reboot
+wait 600
+expect ble_off 1
+expect mute 0
+tap HOME
+wait 30
+turn SELECT 2
+tap SEL
+wait 30
+expect page 3
+out
+key 0 down
+wait 20
+expect_out USB 90 00 7F
+expect_no_out BLE 90 00 7F
+wait 100
+key 0 up
+wait 800
+# and on again
+tap HOME
+wait 30
+turn SELECT 4
+tap SEL
+wait 30
+turn SELECT 12
+tap OCT+
+wait 30
+said BLUETOOTH ON
+expect ble_off 0

@@ -6,7 +6,7 @@ sent, drill short and long presses, learn the code by sound with flash cards, li
 practice, type letters and CW phrases on the keys. GPL-3.0-or-later.
 
 **[MORSE on the web](https://daviddwlee84.github.io/fm1-morse/web/)**: see what your FM-1 reads, send it
-text to copy, back up and restore your progress. Chrome or Edge, the FM-1 on USB, nothing to install.
+text to copy, back up and restore your progress. Chrome or Edge, the FM-1 on USB or Bluetooth, nothing to install.
 
 ![MORSE on the FM-1](docs/screen.png)
 
@@ -25,7 +25,7 @@ A straight key (any key) or iambic A/B paddles (left half dit, right half dah). 
 pitch, received signals a third higher, or silence and the key lights. Hearing and sending have
 their own speeds: Koch wants the characters heard fast, a beginner's hand is slow.
 
-Keying goes out and comes in over USB-MIDI as note 0 on channel 1, the
+Keying goes out and comes in over USB-MIDI or Bluetooth MIDI as note 0 on channel 1, the
 [Vail adapter's format](https://github.com/Vail-CW/vail-adapter/blob/master/docs/MIDI_INTEGRATION_SPEC.md),
 so [Vail](https://vailmorse.com/) and its training tools take it. A host program
 ([`host/morse`](https://github.com/daviddwlee84/M-VAVE_FM-1/tree/main/host/morse)) types what you
@@ -80,13 +80,31 @@ A longer guide (Traditional Chinese):
 Why it teaches this way (Koch, Farnsworth, instant character recognition, Leitner boxes), with
 sources: [LEARNING.md](LEARNING.md).
 
+## Bluetooth
+
+MORSE 0.5 is also a Bluetooth MIDI device (fm1-base's own stack), beside USB: Vail, MORSE on the
+web and the host work without a cable. It is on unless *SETTINGS > BLUETOOTH* says off (kept across
+power-offs). The header shows `BT`, grey while it waits, blue once a computer is connected.
+
+- **Mac**: Audio MIDI Setup, *Window > Show MIDI Studio*, the Bluetooth button, *Connect* next to
+  `FM-1 XXXX`. No pairing code. macOS does not reconnect by itself after the FM-1 restarts: connect
+  again there (`morse --bluetooth ...` opens that window for you).
+- **Browsers**: Chrome and Edge see it as one more MIDI port once the system has connected it.
+  Safari on iPhone and iPad has no Web MIDI.
+- One computer at a time. With USB and Bluetooth both connected, the host and the web page talk over
+  whichever link answered first (the host prefers USB); the keying goes out on both.
+- Keying sent over Bluetooth carries real BLE-MIDI timestamps, and keying received is decoded by the
+  sender's timestamps, so a connection's bunching does not change a dit's length. How well a given
+  computer keeps to them is still to be measured.
+- Nothing of Bluetooth's is written to the flash (no pairing to keep).
+
 ## Your progress: back up and restore
 
 The progress lives on the FM-1 at `0xDA000` (below). Another firmware may keep it or overwrite it
 (SLOOP 2.8.5 kept it in our test; going back to stock V15 does not), so back it up before
 switching. MORSE 0.4 and later:
 
-- In Chrome or Edge: [MORSE on the web](https://daviddwlee84.github.io/fm1-morse/web/)
+- In Chrome or Edge, over USB or (0.5) Bluetooth: [MORSE on the web](https://daviddwlee84.github.io/fm1-morse/web/)
   (or `web/index.html` from this repository, opened from your disk): *Download the progress*,
   later *Send it to the FM-1*.
 - Or on the command line with the host from
@@ -112,7 +130,7 @@ From fm1-base's host simulator (`tests/basic.txt`), twice the size.
 | ![rhythm good](docs/screens/rhythm_good.png) RHYTHM: even | ![rhythm dahs](docs/screens/rhythm_dahs.png) RHYTHM: dahs short | ![type](docs/screens/type.png) TYPE: letters |
 | ![type code](docs/screens/type_code.png) TYPE: the code on the keys | ![phrases](docs/screens/type_phrases.png) TYPE: phrases | ![chart](docs/screens/chart.png) CHART |
 | ![chart edit](docs/screens/chart_edit.png) CHART: edit | ![save](docs/screens/chart_save.png) save? | ![load](docs/screens/load_ask.png) a backup to load |
-| ![settings](docs/screens/settings.png) SETTINGS | | |
+| ![settings](docs/screens/settings.png) SETTINGS | ![bluetooth](docs/screens/settings_bt.png) SETTINGS: BLUETOOTH, connected | |
 
 ## Install
 
@@ -132,7 +150,7 @@ MORSE does not read other firmwares' projects or samples. It keeps one record, i
 progress (about 300 bytes), at `0xDA000`-`0xDBFFF`, written when a round ends and a few seconds
 after a setting changes. On Felucca-family firmwares (SLOOP and others) that range is inside the
 area for samples: if you keep many samples there, back up before switching. It writes nothing else
-outside its own firmware area, and does not touch the global settings at `0xFC000`. (An update to
+outside its own firmware area (nothing for Bluetooth), and does not touch the global settings at `0xFC000`. (An update to
 another firmware, as with every fm1-base firmware, stages its loader at `0xE0000`.)
 
 ## Build

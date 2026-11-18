@@ -13,7 +13,7 @@
 #include "tone.c"
 
 #define FW_MAJOR 0u
-#define FW_MINOR 4u
+#define FW_MINOR 5u
 
 /* ---------------------------------------------------------------- protocol --- */
 #define MO_VER 1u
@@ -50,7 +50,8 @@ typedef struct {
     uint8_t eff;                         /* hearing: effective speed (Farnsworth) 5..wpm */
     uint8_t keyer;                       /* MO_STRAIGHT, MO_IAMBIC_A, MO_IAMBIC_B */
     uint8_t swap;                        /* paddles: 0 left half dit, 1 left half dah */
-    uint8_t mute;
+    uint8_t mute;                        /* bit 0 the sound off (the lights keep the rhythm), bit 1 Bluetooth off
+                                          * (0.5; a 0.4 record has it 0: on) */
     uint8_t cards;                       /* per round 10..30 */
     uint8_t learn;                       /* LM_* */
     uint8_t look;                        /* bits 0-1 KEY's view (KV_*), bit 2 TYPE's keys show the code, bits 3-4
@@ -78,6 +79,8 @@ static uint32_t tlayout(void) { return SET.look >> 3 & 3u; }
 static uint32_t lhide(void) { return SET.look >> 5 & 1u; }
 static uint32_t tcompose(void) { return SET.look >> 6 & 1u; }
 static uint32_t strict(void) { return SET.look >> 7 & 1u; }
+static uint32_t muted(void) { return SET.mute & 1u; }
+static uint32_t bt_off(void) { return SET.mute >> 1 & 1u; }
 static void look_set(uint32_t shift, uint32_t mask, uint32_t v)
 {
     SET.look = (uint8_t)((SET.look & ~(mask << shift)) | (v & mask) << shift);
@@ -101,7 +104,7 @@ static void set_defaults(void)          /* the START preset: Koch's characters a
 static int set_valid(const set_t *s)
 {
     return s->wpm >= 5u && s->wpm <= 40u && s->eff >= 5u && s->eff <= s->wpm && s->keyer < MO_NKEYER && s->swap <= 1u
-           && s->mute <= 1u && s->cards >= 10u && s->cards <= 30u && s->learn <= LM_VISUAL && s->pitch >= 300u
+           && s->mute <= 3u && s->cards >= 10u && s->cards <= 30u && s->learn <= LM_VISUAL && s->pitch >= 300u
            && s->pitch <= 1200u && (s->look & 3u) < KV_N && (s->look >> 3 & 3u) < TL_N
            && s->send >= 5u && s->send <= 40u && s->prog < LP_N;
 }
@@ -131,7 +134,7 @@ static mo_player_t ptx, prx;
 static volatile uint8_t key_input;       /* the keys are the Morse key now */
 static volatile uint8_t own_midi;        /* own keying goes out as MIDI (KEY) */
 static volatile uint8_t ptx_midi;        /* ptx's playing goes out as MIDI (TYPE) */
-static uint8_t own_down, ptx_down, rx_midi, rx_down, midi_down;
+static uint8_t own_down, ptx_down, prx_down, rx_midi, rx_down, midi_down;
 typedef struct {
     uint8_t src, down;
     uint32_t t;
@@ -139,6 +142,13 @@ typedef struct {
 #define EV_N 64u
 static ev_t ev[EV_N];
 static volatile uint32_t ev_w, ev_r;
+#if FM1B_BLE
+#define BX_N 256u                        /* Bluetooth's SysEx packets, from the tick to the main loop (a 640-byte frame
+                                          * is 214 of them; the host sends 64-byte ones) */
+static uint32_t bx[BX_N];
+static volatile uint32_t bx_w, bx_r;
+#endif
+static uint32_t rx_t;                    /* when the received key last changed (Bluetooth: when the sender keyed it) */
 #define LEFT_KEYS ((1u << 13) - 1u)      /* F3..F4: the left paddle */
 #ifdef PLAT_HOST
 static mo_player_t host_hand;            /* "sendkeys": a scripted hand on a straight key */
@@ -191,7 +201,7 @@ static struct {
     const char *gloss;                   /* TYPE: what the last phrase means */
     uint32_t rec_t;                      /* TYPE: REC went down at (0: up, or its hold already cleared the line) */
     char last;                           /* KEY: the last character read */
-    uint8_t host_was, lamp_was, pat_was;
+    uint8_t host_was, ble_was, lamp_was, pat_was;
 } ui;
 enum { R_HEAD = 1, R_MAIN = 2, R_LAMP = 4, R_FOOT = 8, R_ALL = 15 };
 
@@ -362,7 +372,7 @@ static void timing_apply(void)
     applied.wpm = SET.wpm, applied.eff = SET.eff, applied.send = SET.send;
     tone_pitch(TONE_TX, (float)SET.pitch);
     tone_pitch(TONE_RX, (float)SET.pitch * 1.26f);   /* received a major third up */
-    tone_mute(SET.mute);
+    tone_mute((int)muted());
 }
 
 static void set_changed(void)
@@ -441,7 +451,22 @@ static void midi_key(void)               /* own keying and ptx's playing, as one
     if (down == midi_down)
         return;
     midi_down = (uint8_t)down;
-    plat_midi_send(down ? MIDI_KEY_ON : MIDI_KEY_OFF, TO_USB);
+    plat_midi_send(down ? MIDI_KEY_ON : MIDI_KEY_OFF, TO_USB | (FM1B_BLE && !bt_off() ? TO_BLE_HOST : 0u));
+}
+
+/* a key change from MIDI at the time it was made: Bluetooth's by the sender's BLE-MIDI timestamp (ble_midi_time),
+ * the connection's bunching taken out; never before the last one, never ahead of now */
+static void rx_at(int port, uint32_t now)
+{
+    uint32_t t = now;
+    if (port == PORT_BLE) {
+        int32_t ago = (int32_t)(plat_ticks24() - plat_midi_in_t24()) / (int32_t)(PLAT_TICKS_PER_US * 1000u);
+        if (ago > 0)
+            t = now - (uint32_t)(ago < 500 ? ago : 500);
+    }
+    if ((int32_t)(t - rx_t) < 0)
+        t = rx_t;
+    rx_t = t;
 }
 
 void app_tick(void)
@@ -472,16 +497,37 @@ void app_tick(void)
     tone_gate(TONE_TX, own || t);
     /* MIDI in: a key-down on channel 1, any note (Vail sends 0, a DAW whatever it plays); velocity 0 is a release */
     while (plat_midi_in(&pkt, &port)) {
-        uint32_t st = pkt >> 8 & 0xFFu, vel = pkt >> 24 & 0x7Fu;
-        if (st == 0x90u && vel)
-            rx_midi = 1;
-        else if (st == 0x80u || st == 0x90u)
-            rx_midi = 0;
+        uint32_t st = pkt >> 8 & 0xFFu, vel = pkt >> 24 & 0x7Fu, cin = pkt & 0x0Fu;
+#if FM1B_BLE
+        if (port == PORT_BLE && cin >= 4u && cin <= 7u) {   /* the host's frames, put together in the main loop */
+            uint32_t next = (bx_w + 1u) % BX_N;
+            if (next != bx_r) {
+                bx[bx_w] = pkt;
+                bx_w = next;
+            }
+            continue;
+        }
+#else
+        (void)cin;
+#endif
+        if (st == 0x90u || st == 0x80u) {
+            /* each change goes in as it comes: over Bluetooth a short dit's down and up can come in one tick,
+             * each at its own time */
+            rx_midi = (uint8_t)(st == 0x90u && vel);
+            rx = rx_midi || prx_down;
+            if (rx != rx_down) {
+                rx_down = (uint8_t)rx;
+                rx_at(port, now);
+                ev_push(SRC_RX, rx, rx_t);
+            }
+        }
     }
-    rx = rx_midi || mo_player_tick(&prx);
-    if (rx != rx_down) {
+    prx_down = (uint8_t)mo_player_tick(&prx);
+    rx = rx_midi || prx_down;
+    if (rx != rx_down) {                 /* the computer's text played here */
         rx_down = (uint8_t)rx;
-        ev_push(SRC_RX, rx, now);
+        rx_at(PORT_USB, now);
+        ev_push(SRC_RX, rx, rx_t);
     }
     tone_gate(TONE_RX, rx);
 }
@@ -689,6 +735,55 @@ static int host_frame(const uint8_t *p, uint32_t n, int transport)
 
 int app_sysex(const uint8_t *p, uint32_t n) { return host_frame(p, n, HL_USB); }
 
+#if FM1B_BLE
+/* Bluetooth: the own stack hands SysEx over as USB-MIDI packets on PORT_BLE; the tick queues them (bx) */
+static hl_sx_t ble_rx;
+static void ble_in(void)
+{
+    const uint8_t *f;
+    uint32_t n;
+    while (bx_r != bx_w) {
+        uint32_t pkt = bx[bx_r];
+        bx_r = (bx_r + 1u) % BX_N;
+        if (hl_sx_packet(&ble_rx, pkt, &f, &n))
+            host_frame(f, n, HL_BLE);
+    }
+}
+
+/* nothing of Bluetooth's is written: the own stack makes its address from the flash part's unique ID (the same at
+ * every start) and there is no pairing to keep (macOS and iOS connect without one), as in Conductor */
+int app_ble_load(struct plat_ble_rec *r)
+{
+    (void)r;
+    return 0;
+}
+int app_ble_save(const struct plat_ble_rec *r)
+{
+    (void)r;
+    return 0;
+}
+#endif
+
+/* APP_BLE_AT_BOOT: the device asks before app_init, so it reads the record itself, into its own copy */
+int morse_ble_off(void)
+{
+    static rec_t r;
+    if (plat_store_load(OBJ_MORSE, &r, sizeof r) != (int)sizeof r || r.magic != REC_MAGIC || r.ver != REC_VER
+        || r.size != sizeof r || r.set.mute > 3u)
+        return 0;
+    return r.set.mute >> 1 & 1;
+}
+
+static void ble_toggle(void)
+{
+    SET.mute ^= 2u;
+    set_changed();
+#if FM1B_BLE
+    plat_ble_enable(!bt_off());
+#endif
+    app_say("BLUETOOTH", bt_off() ? "OFF" : "ON");
+}
+
 /* ------------------------------------------------------------- the pages --- */
 static void inputs_for_page(void)        /* who the keys and MIDI belong to on this page */
 {
@@ -813,7 +908,7 @@ static void card_present(void)
 
 static void practice_start(void)
 {
-    uint32_t flags = (SET.mute ? LN_MUTED : 0u) | (visual() ? LN_VISUAL : 0u);
+    uint32_t flags = (muted() ? LN_MUTED : 0u) | (visual() ? LN_VISUAL : 0u);
     if (pr.test) {
         if (rec.ln.open >= LN_N) {
             app_say("ALL OPEN", "NOTHING TO TEST");
@@ -1592,7 +1687,7 @@ static void page_sel(void)               /* SEL: choose, skip, switch */
     }
 }
 
-#define SET_ITEMS 12u
+#define SET_ITEMS 13u
 static void page_select(int32_t e)       /* SELECT turned */
 {
     int32_t d = e > 0 ? 1 : -1;
@@ -1709,9 +1804,9 @@ static void pitch(int32_t d)
 
 static void mute_toggle(void)
 {
-    SET.mute = (uint8_t)!SET.mute;
+    SET.mute ^= 1u;
     set_changed();
-    app_say("SOUND", SET.mute ? "OFF: WATCH THE LIGHTS" : "ON");
+    app_say("SOUND", muted() ? "OFF: WATCH THE LIGHTS" : "ON");
 }
 
 /* speeds that go together, from a beginner's to a fluent operator's: Koch's characters at 20 WPM or more with the
@@ -1750,7 +1845,7 @@ static void preset_step(int32_t d)
 /* the settings page: SELECT moves, OCT- / OCT+ (or SEL) change */
 static const char *const SET_NAME[SET_ITEMS] = {"PRESET", "HEAR SPEED", "SPACING", "SEND SPEED", "PITCH",    "KEYER",
                                                 "PADDLES", "SOUND",     "CARDS",   "LEARN BY",   "JUDGING",
-                                                "TYPE KEYS"};
+                                                "TYPE KEYS", "BLUETOOTH"};
 static void settings_step(int32_t d)
 {
     switch (ui.sel) {
@@ -1787,6 +1882,7 @@ static void settings_step(int32_t d)
         look_set(3, 3u, wrap(tlayout(), d, TL_N));
         look_changed();
         break;
+    case 12: ble_toggle(); break;
     default:
         break;
     }
@@ -1946,6 +2042,9 @@ static void input(void)
 void app_input_only(void)
 {
     input();
+#if FM1B_BLE
+    ble_in();
+#endif
     read_events();
 }
 
@@ -1959,7 +2058,7 @@ static void lights(uint32_t now)
     for (k = 0; k < NB; k++)
         if (k != B_PLAY)
             ledfx_set(&bb, k, FX_GLOW, now);
-    if (SET.mute)
+    if (muted())
         ledfx_set(&bb, B_FX, FX_LIT, now);
     if (ui.page == PG_PRACTICE && pr.ps == PS_CARD && c && ln_choose(c->type)) {
         for (i = 0; i < 4u; i++)
@@ -2040,13 +2139,17 @@ static void draw_header(uint32_t now)
         text_cat(t, " WPM");
         x = 232 - text_w(&FONT_XS, t);
         cv_text(x, 10, &FONT_XS, t, C_GRAY);
-        if (SET.mute) {
+        if (muted()) {
             x -= 8 + text_w(&FONT_XS, "MUTE");
             cv_text(x, 10, &FONT_XS, "MUTE", C_RX);
         }
         if (hl_host(&link, now)) {
             x -= 8 + text_w(&FONT_XS, "PC");
             cv_text(x, 10, &FONT_XS, "PC", C_BLUE);
+        }
+        if (FM1B_BLE && !bt_off()) {    /* grey while it waits for a computer, blue once one is connected */
+            x -= 8 + text_w(&FONT_XS, "BT");
+            cv_text(x, 10, &FONT_XS, "BT", plat_ble_connected() ? C_BLUE : C_DIM);
         }
     }
     cv_rect(0, 31, 240, 1, C_LINE);
@@ -2545,7 +2648,7 @@ static void practice_at(int32_t oy)      /* drawn twice, each half with the rows
             text_c(120, 50 - oy, &FONT_L, t, C_WHITE);
             if (visual() || pr.peek)
                 draw_code(mo_code(ch), 120, 100 - oy, 8, C_GRAY);
-            text_c(120, 128 - oy, &FONT_XS, SET.mute ? "watch it, then a key" : "listen, then any key", C_DIM);
+            text_c(120, 128 - oy, &FONT_XS, muted() ? "watch it, then a key" : "listen, then any key", C_DIM);
             break;
         case CARD_HEAR_CHOOSE:
         case CARD_LIGHT_CHOOSE:
@@ -2735,8 +2838,9 @@ static void set_at(int32_t oy)
     static const char *const LAYOUT[TL_N] = {"A-P WHITE, Q-Z BLACK", "A-Z LEFT TO RIGHT", "KOCH ORDER"};
     char t[32];
     uint32_t i;
+    int32_t top = ui.sel > 11u ? (int32_t)(ui.sel - 11u) * 14 : 0;   /* twelve rows fit: scrolled for the rest */
     for (i = 0; i < SET_ITEMS; i++) {
-        int32_t y = 1 + (int32_t)i * 14 - oy;
+        int32_t y = 1 + (int32_t)i * 14 - oy - top;
         if (i == ui.sel)
             cv_rect(0, y - 1, 240, 14, C_LINE);
         cv_text(8, y, &FONT_XS, SET_NAME[i], C_GRAY);
@@ -2763,11 +2867,15 @@ static void set_at(int32_t oy)
         case 4: int_cat(t, SET.pitch); text_cat(t, " HZ"); break;
         case 5: text_cat(t, KEYER[SET.keyer]); break;
         case 6: text_cat(t, SET.swap ? "LEFT DAH" : "LEFT DIT"); break;
-        case 7: text_cat(t, SET.mute ? "OFF (LIGHTS)" : "ON"); break;
+        case 7: text_cat(t, muted() ? "OFF (LIGHTS)" : "ON"); break;
         case 8: int_cat(t, SET.cards); text_cat(t, " A ROUND"); break;
         case 9: text_cat(t, visual() ? "SIGHT" : "SOUND (BEST)"); break;
         case 10: text_cat(t, strict() ? "STRICT (SEND SPEED)" : "BY RHYTHM (EASY)"); break;
         case 11: text_cat(t, LAYOUT[tlayout()]); break;
+        case 12:
+            text_cat(t, !FM1B_BLE ? "NOT IN THIS BUILD" : bt_off() ? "OFF" : !plat_ble_connected() ? "ON (NOT CONNECTED)"
+                        : hl_host(&link, plat_ms()) && link.transport == HL_BLE ? "ON (TALKING)" : "ON (CONNECTED)");
+            break;
         default: break;
         }
         cv_text(96, y, &FONT_XS, t, i == ui.sel ? C_WHITE : C_RX);
@@ -2980,7 +3088,12 @@ void app_init(void)
     zero(dsrc, sizeof dsrc);
     zero(&applied, sizeof applied);
     ev_w = ev_r = 0;
-    own_down = ptx_down = rx_midi = rx_down = midi_down = 0;
+    rx_t = plat_ms();
+#if FM1B_BLE
+    bx_w = bx_r = 0;
+    zero(&ble_rx, sizeof ble_rx);
+#endif
+    own_down = ptx_down = prx_down = rx_midi = rx_down = midi_down = 0;
     key_input = own_midi = ptx_midi = 0;
     saves = 0;
     dirty_at = 0;
@@ -3020,6 +3133,9 @@ void app_frame(void)
     uint32_t now = plat_ms();
     uint8_t host, lamp, pat;
     input();
+#if FM1B_BLE
+    ble_in();
+#endif
     read_events();
     if (ui.page == PG_PRACTICE)
         practice_step(now);
@@ -3030,8 +3146,14 @@ void app_frame(void)
     host = (uint8_t)hl_host(&link, now);
     if (host != ui.host_was) {
         ui.host_was = host;
-        ui.redraw |= R_HEAD;
+        ui.redraw |= R_HEAD | (ui.page == PG_SET ? R_MAIN : 0u);
     }
+#if FM1B_BLE
+    if ((uint8_t)plat_ble_connected() != ui.ble_was) {   /* BT grey or blue, and SETTINGS says so */
+        ui.ble_was = (uint8_t)plat_ble_connected();
+        ui.redraw |= R_HEAD | (ui.page == PG_SET ? R_MAIN : 0u);
+    }
+#endif
     if ((ui.msg_until && now >= ui.msg_until) != last_msg) {
         last_msg = ui.msg_until && now >= ui.msg_until;
         ui.redraw |= R_HEAD;
@@ -3063,7 +3185,9 @@ int app_expect(const char *what, int *got)
     if (!strcmp(what, "page"))
         *got = ui.page;
     else if (!strcmp(what, "mute"))
-        *got = SET.mute;
+        *got = (int)muted();
+    else if (!strcmp(what, "ble_off"))
+        *got = (int)bt_off();
     else if (!strcmp(what, "wpm"))
         *got = SET.wpm;
     else if (!strcmp(what, "eff"))
@@ -3092,6 +3216,8 @@ int app_expect(const char *what, int *got)
         *got = (int)slen(ui.line);
     else if (!strcmp(what, "host"))
         *got = hl_host(&link, plat_ms());
+    else if (!strcmp(what, "transport"))
+        *got = link.transport;
     else if (!strcmp(what, "ps"))
         *got = pr.ps;
     else if (!strcmp(what, "card"))
@@ -3214,6 +3340,37 @@ int app_host_cmd(const char *cmd, const char *a, const char *b, const char *c, c
             printf("  ok text %s \"%s\"\n", a, t);
         return 1;
     }
+#if FM1B_BLE
+    if (!strcmp(cmd, "ble_frame")) {     /* ble_frame hello_ack|prog_req|text WORD: one of the host's frames over
+                                          * Bluetooth, as the own stack hands it over (SysEx packets, CIN 4..7) */
+        uint8_t f[48];
+        uint32_t n = 0, i, k;
+        f[n++] = 0xF0, f[n++] = 0x7D, f[n++] = 0x4D, f[n++] = 0x4F, f[n++] = MO_VER;
+        if (!strcmp(a, "hello_ack"))
+            f[n++] = T_HELLO_ACK, f[n++] = 1;
+        else if (!strcmp(a, "prog_req"))
+            f[n++] = T_PROG_REQ;
+        else {
+            f[n++] = T_TEXT;
+            for (i = 0; b[i] && n < sizeof f - 1u; i++)
+                f[n++] = (uint8_t)b[i];
+        }
+        f[n++] = 0xF7;
+        for (i = 0; i < n; i += 3) {
+            uint32_t left = n - i, pkt;
+            k = left > 3u ? 3u : left;
+            pkt = left > 3u ? 4u : 4u + k;
+            pkt |= (uint32_t)f[i] << 8;
+            if (k > 1u)
+                pkt |= (uint32_t)f[i + 1u] << 16;
+            if (k > 2u)
+                pkt |= (uint32_t)f[i + 2u] << 24;
+            bx[bx_w] = pkt;
+            bx_w = (bx_w + 1u) % BX_N;
+        }
+        return 1;
+    }
+#endif
     if (!strcmp(cmd, "setcard")) {       /* setcard hear_key|see_key CHAR: the card asked now becomes this one */
         ln_card_t *k = pr.ps == PS_CARD && pr.r.at < pr.r.n ? &pr.r.card[pr.r.at] : 0;
         int i = ln_index(b[0]);
