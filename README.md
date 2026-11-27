@@ -22,7 +22,7 @@ No FM-1 at hand? **[Try it in the browser](https://daviddwlee84.github.io/fm1-mo
 | **KEY** | Key freely and read what you sent: as text, as each letter over the dits and dahs you keyed, or as bars to scale. Your speed, dah:dit ratio and the gaps inside letters. |
 | **RHYTHM** | Drills of short and long presses against the target length, a judgement for each press, a hint, and a send speed that fits your hand. |
 | **TYPE** | The keys are letters, digits and signs, or CW phrases and prosigns (`CQ`, `<SK>`, `73`...). Each key plays at once, or compose a line and send it. |
-| **CHART** | The course as a grid, coloured by how well you know each letter. Edit it by hand (a letter's level, the groups open, all one step back, all reset); nothing is written until you confirm. |
+| **CHART** | The course as a grid, coloured by how well you know each letter, or (`SEQ`, 0.9) by how often you missed it. The footer counts the letter's misses; a dot marks a letter missed often lately, which comes back sooner than its level says. Edit it by hand (a letter's level, the groups open, all one step back, all reset); nothing is written until you confirm. |
 
 A straight key (any key) or iambic A/B paddles (left half dit, right half dah). A sidetone at your
 pitch, received signals a third higher, or silence and the key lights. Hearing and sending have
@@ -57,7 +57,7 @@ MORSE starts on the menu (SETTINGS > START PAGE picks another page; up to 0.6 it
 | KEY | `SEQ` view (text, code, timing); `OCT-` clear |
 | RHYTHM | `SELECT` drill; `PLAY` start again |
 | TYPE | `OCT-` / `OCT+` page (letters, digits and signs, phrases); `REC` delete, held: clear; `PLAY` play / stop; `SEL` live / compose; `SEQ` the code on the keys |
-| CHART | `SELECT` move; `PLAY` hear it; `REC` edit: `OCT-` / `OCT+` or `K1` the letter's level (0 = new again), `K2` groups open, `FX` all one box back, `SEL` held 2 s all reset; `PLAY` or `REC` then asks *SAVE CHANGES?* (`PLAY` yes, `HOME` no) |
+| CHART | `SELECT` move; `PLAY` hear it; `SEQ` colour by level / by misses; `REC` edit: `OCT-` / `OCT+` or `K1` the letter's level (0 = new again), `K2` groups open, `FX` all one box back, `SEL` held 2 s all reset; `PLAY` or `REC` then asks *SAVE CHANGES?* (`PLAY` yes, `HOME` no) |
 | SETTINGS | `SELECT` item; `OCT-` / `OCT+` change. START PAGE: the page it starts on (MENU by default). PRESET sets the speeds together: START (hear 20/8, send 10), BUILDING, QSO, FAST. JUDGING: by rhythm (default) or strict (the decoder at the send speed, as up to 0.3) |
 
 Any question on the screen about your progress (save an edit, mark what a test found, load a
@@ -142,6 +142,7 @@ From fm1-base's host simulator (`tests/basic.txt`), twice the size.
 | ![rhythm good](docs/screens/rhythm_good.png) RHYTHM: even | ![rhythm dahs](docs/screens/rhythm_dahs.png) RHYTHM: dahs short | ![type](docs/screens/type.png) TYPE: letters |
 | ![type code](docs/screens/type_code.png) TYPE: the code on the keys | ![phrases](docs/screens/type_phrases.png) TYPE: phrases | ![chart](docs/screens/chart.png) CHART |
 | ![chart edit](docs/screens/chart_edit.png) CHART: edit | ![save](docs/screens/chart_save.png) save? | ![load](docs/screens/load_ask.png) a backup to load |
+| ![chart stats](docs/screens/chart_stats.png) CHART: a letter's misses | ![chart misses](docs/screens/chart_miss.png) CHART by misses (`SEQ`) | |
 | ![settings](docs/screens/settings.png) SETTINGS | ![bluetooth](docs/screens/settings_bt.png) SETTINGS: BLUETOOTH, connected | ![start page](docs/screens/settings_start.png) SETTINGS: START PAGE |
 | ![load settings](docs/screens/load_settings.png) a backup with settings | ![unsaved](docs/screens/unsaved.png) `*`: a setting not saved yet | |
 

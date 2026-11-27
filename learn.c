@@ -55,20 +55,26 @@ static uint32_t ln_rand(uint32_t *x)     /* xorshift32 */
     return *x = v;
 }
 
-int ln_due(const ln_state_t *s, uint32_t i, int dir)
+static uint32_t ln_ebox(const ln_state_t *s, const ln_stats_t *t, uint32_t i, uint32_t dir)   /* box as scheduled */
+{
+    uint32_t b = s->box[i][dir], h = t ? ln_hard(t, i, (int)dir) : 0u;
+    return b > h ? b - h : 0u;
+}
+
+int ln_due(const ln_state_t *s, const ln_stats_t *t, uint32_t i, int dir)
 {
     if (i >= s->open)
         return 0;
     if (s->last[i][dir] == LN_NEVER)     /* sending starts once it was recognised; a new character is not "due" */
         return dir == LN_SEND && s->box[i][LN_REC] >= 1u;
-    return (uint32_t)(uint16_t)(s->round - s->last[i][dir]) >= (1u << s->box[i][dir]);
+    return (uint32_t)(uint16_t)(s->round - s->last[i][dir]) >= (1u << ln_ebox(s, t, i, (uint32_t)dir));
 }
 
-uint32_t ln_due_count(const ln_state_t *s)
+uint32_t ln_due_count(const ln_state_t *s, const ln_stats_t *t)
 {
     uint32_t i, n = 0;
     for (i = 0; i < s->open; i++)
-        n += (uint32_t)ln_due(s, i, LN_REC) + (uint32_t)ln_due(s, i, LN_SEND);
+        n += (uint32_t)ln_due(s, t, i, LN_REC) + (uint32_t)ln_due(s, t, i, LN_SEND);
     return n;
 }
 
@@ -139,7 +145,7 @@ static void ln_add(const ln_state_t *s, ln_round_t *r, uint32_t ch, int dir, uin
         ln_options(s, r, c);
 }
 
-void ln_build(const ln_state_t *s, ln_round_t *r, uint32_t n, uint32_t flags, uint32_t seed)
+void ln_build(const ln_state_t *s, const ln_stats_t *t, ln_round_t *r, uint32_t n, uint32_t flags, uint32_t seed)
 {
     uint8_t qch[LN_N * LN_NDIR], qdir[LN_N * LN_NDIR], used[LN_N][LN_NDIR];
     uint32_t key[LN_N * LN_NDIR];
@@ -188,14 +194,14 @@ void ln_build(const ln_state_t *s, ln_round_t *r, uint32_t n, uint32_t flags, ui
         for (i = 0; i < s->open; i++)
             for (d = 0; d < LN_NDIR; d++) {
                 uint32_t wait;
-                if (used[i][d] || (j == 0u) != (ln_due(s, i, (int)d) != 0))
+                if (used[i][d] || (j == 0u) != (ln_due(s, t, i, (int)d) != 0))
                     continue;
                 if (j == 1u && s->last[i][d] == LN_NEVER)
                     continue;            /* not yet seen, not yet due: a later round */
                 wait = s->last[i][d] == LN_NEVER ? 0u : (uint16_t)(s->round - s->last[i][d]);
                 qch[nq] = (uint8_t)i;
                 qdir[nq] = (uint8_t)d;
-                key[nq] = j * 0x10000000u + s->box[i][d] * 0x100000u + (0xFFFFu - (wait > 0xFFFFu ? 0xFFFFu : wait)) * 16u
+                key[nq] = j * 0x10000000u + ln_ebox(s, t, i, d) * 0x100000u + (0xFFFFu - (wait > 0xFFFFu ? 0xFFFFu : wait)) * 16u
                           + ln_rand(&r->rng) % 16u;
                 used[i][d] = 1;
                 nq++;
@@ -310,6 +316,78 @@ int ln_answer(ln_state_t *s, ln_round_t *r, int result)
     s->last[c->ch][c->dir] = s->round;
     r->at++;
     return up;
+}
+
+void ln_stats_init(ln_stats_t *t)
+{
+    uint8_t *p = (uint8_t *)t;
+    uint32_t k;
+    for (k = 0; k < sizeof *t; k++)
+        p[k] = 0;
+}
+
+int ln_stats_valid(const ln_stats_t *t)
+{
+    uint32_t i, d;
+    for (i = 0; i < LN_N; i++)
+        for (d = 0; d < LN_NDIR; d++)
+            if ((uint32_t)t->wrong[i][d] + t->near[i][d] > t->asked[i][d] || t->lapse[i][d] > t->wrong[i][d]
+                || t->rq[i][d] > LN_RECENT || t->rm[i][d] > 2u * t->rq[i][d])
+                return 0;
+    return 1;
+}
+
+void ln_tally(ln_stats_t *t, const ln_state_t *s, const ln_round_t *r, int result)
+{
+    const ln_card_t *c = ln_card(r);
+    uint32_t i, d;
+    if (!c || r->place || c->type == CARD_NEW || c->again)
+        return;
+    i = c->ch, d = c->dir;
+    if (t->asked[i][d] == 0xFFFFu) {     /* full: all halved, the rates kept */
+        t->asked[i][d] /= 2u;
+        t->wrong[i][d] /= 2u;
+        t->near[i][d] /= 2u;
+        t->lapse[i][d] /= 2u;
+    }
+    if (t->rq[i][d] >= LN_RECENT) {      /* the recent window: the older half forgotten */
+        t->rq[i][d] /= 2u;
+        t->rm[i][d] = (uint8_t)((t->rm[i][d] + 1u) / 2u);
+        if (t->rm[i][d] > 2u * t->rq[i][d])
+            t->rm[i][d] = (uint8_t)(2u * t->rq[i][d]);
+    }
+    t->asked[i][d]++;
+    t->rq[i][d]++;
+    if (result == LN_RIGHT)
+        return;
+    if (result == LN_ALMOST) {
+        t->near[i][d]++;
+        t->rm[i][d]++;
+        return;
+    }
+    t->wrong[i][d]++;
+    t->rm[i][d] = (uint8_t)(t->rm[i][d] + 2u);
+    if (s->box[i][d] >= 2u && t->lapse[i][d] < 255u && t->lapse[i][d] < t->wrong[i][d])
+        t->lapse[i][d]++;
+}
+
+uint32_t ln_hard(const ln_stats_t *t, uint32_t i, int dir)
+{
+    uint32_t q, m;
+    if (i >= LN_N)
+        return 0;
+    q = t->rq[i][dir], m = t->rm[i][dir];
+    if (q < LN_HARD_MIN)
+        return 0;
+    return m * 100u >= q * 2u * 40u ? 2u : m * 100u >= q * 2u * 20u ? 1u : 0u;
+}
+
+int32_t ln_miss_pct(const ln_stats_t *t, uint32_t i, int dir)
+{
+    uint32_t a;
+    if (i >= LN_N || (a = t->asked[i][dir]) == 0u)
+        return -1;
+    return (int32_t)(((2u * t->wrong[i][dir] + t->near[i][dir]) * 100u + a) / (2u * a));
 }
 
 int ln_finish(ln_state_t *s, const ln_round_t *r)

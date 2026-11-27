@@ -302,9 +302,9 @@ static void test_learn(void)
     uint32_t i, rounds, opened = 0;
     ln_init(&s);
     CHECK(ln_valid(&s), "a new record is valid");
-    CHECK(s.open == 5 && ln_new_count(&s) == 5 && ln_due_count(&s) == 0, "five open, all new");
+    CHECK(s.open == 5 && ln_new_count(&s) == 5 && ln_due_count(&s, 0) == 0, "five open, all new");
     CHECK(ln_char(0) == 'K' && ln_char(1) == 'M' && ln_index('x') == 40 && ln_index('#') == -1, "Koch order");
-    ln_build(&s, &r, 10, 0u, 7);
+    ln_build(&s, 0, &r, 10, 0u, 7);
     CHECK(r.card[0].type == CARD_NEW && r.card[1].type == CARD_NEW && r.card[2].type == CARD_NEW,
           "three new characters shown first");
     CHECK(r.card[0].ch == 0 && r.card[1].ch == 1 && r.card[2].ch == 2, "K M U");
@@ -328,28 +328,28 @@ static void test_learn(void)
         ln_answer(&s, &r, 1);
     CHECK(ln_finish(&s, &r) == 0 && s.round == 1 && s.streak == 1, "round counted, streak 1");
     CHECK(s.box[0][LN_REC] == 1 && s.last[0][LN_REC] == 0, "K in box 1, not 2: the repeat does not move it again");
-    CHECK(ln_due(&s, 0, LN_REC) == 0, "box 1 not due one round later");
-    CHECK(ln_due(&s, 0, LN_SEND) == 1, "sending K is due once it was recognised");
+    CHECK(ln_due(&s, 0, 0, LN_REC) == 0, "box 1 not due one round later");
+    CHECK(ln_due(&s, 0, 0, LN_SEND) == 1, "sending K is due once it was recognised");
     CHECK(ln_new_count(&s) == 2, "R E still new");
     /* muted: nothing that needs sound; by sound the lamp's rhythm, by sight the drawn code */
-    ln_build(&s, &r, 20, LN_MUTED, 9);
+    ln_build(&s, 0, &r, 20, LN_MUTED, 9);
     for (i = 0; i < r.n; i++)
         CHECK(r.card[i].type == CARD_NEW || r.card[i].type == CARD_LIGHT_CHOOSE || r.card[i].type == CARD_SEE_KEY,
               "muted by sound: card %u type %u", i, r.card[i].type);
-    ln_build(&s, &r, 20, LN_MUTED | LN_VISUAL, 9);
+    ln_build(&s, 0, &r, 20, LN_MUTED | LN_VISUAL, 9);
     for (i = 0; i < r.n; i++)
         CHECK(r.card[i].type == CARD_NEW || r.card[i].type == CARD_CODE_CHOOSE || r.card[i].type == CARD_SEE_KEY,
               "muted by sight: card %u type %u", i, r.card[i].type);
     /* by sound, never a drawn code; by sight, the low boxes see it drawn */
-    ln_build(&s, &r, 20, 0, 13);
+    ln_build(&s, 0, &r, 20, 0, 13);
     for (i = 0; i < r.n; i++)
         CHECK(r.card[i].type != CARD_CODE_CHOOSE && r.card[i].type != CARD_LIGHT_CHOOSE, "by sound: card %u heard", i);
-    ln_build(&s, &r, 20, LN_VISUAL, 13);
+    ln_build(&s, 0, &r, 20, LN_VISUAL, 13);
     for (i = 0; i < r.n; i++)
         CHECK(r.card[i].dir != LN_REC || r.card[i].type == CARD_NEW || r.card[i].type == CARD_CODE_CHOOSE,
               "by sight, box 0-1: card %u drawn", i);
     /* a miss: box 0, asked again at the end; right then does not move it up */
-    ln_build(&s, &r, 20, 0, 11);
+    ln_build(&s, 0, &r, 20, 0, 11);
     while ((c = ln_card(&r)) != 0 && c->type == CARD_NEW)
         ln_answer(&s, &r, 1);
     {
@@ -365,7 +365,7 @@ static void test_learn(void)
     }
     /* answering everything right opens the next groups, round by round */
     for (rounds = 0; rounds < 200 && s.open < LN_N; rounds++) {
-        ln_build(&s, &r, 20, 0, rounds + 100);
+        ln_build(&s, 0, &r, 20, 0, rounds + 100);
         while (ln_card(&r))
             ln_answer(&s, &r, 1);
         opened += (uint32_t)ln_finish(&s, &r);
@@ -375,7 +375,7 @@ static void test_learn(void)
     CHECK(ln_valid(&s), "still valid");
     CHECK(s.right == s.answered - 1, "one miss counted (%u of %u)", s.right, s.answered);
     for (i = 0; i < 400 && s.box[40][LN_REC] < LN_TOP; i++) {
-        ln_build(&s, &r, 24, 0, i + 1000);
+        ln_build(&s, 0, &r, 24, 0, i + 1000);
         while (ln_card(&r))
             ln_answer(&s, &r, 1);
         ln_finish(&s, &r);
@@ -385,9 +385,105 @@ static void test_learn(void)
     CHECK(!ln_valid(&s), "a box over 5 is not valid");
     /* a round left before any answer counts nothing */
     ln_init(&s);
-    ln_build(&s, &r, 10, 0, 3);
+    ln_build(&s, 0, &r, 10, 0, 3);
     ln_answer(&s, &r, 1);
     CHECK(ln_finish(&s, &r) == 0 && s.round == 0, "only shown: not a round");
+}
+
+/* ------------------------------------------------------------------- stats --- */
+static ln_card_t *at_card(ln_round_t *r) { return r->at < r->n ? &r->card[r->at] : 0; }
+
+static void tally_answer(ln_stats_t *t, ln_state_t *s, ln_round_t *r, int res)
+{
+    ln_tally(t, s, r, res);
+    ln_answer(s, r, res);
+}
+
+static void test_stats(void)
+{
+    ln_state_t s;
+    ln_stats_t t;
+    ln_round_t r;
+    ln_card_t *c;
+    uint32_t i, rounds, asked_r = 0, asked_k = 0;
+    ln_init(&s);
+    ln_stats_init(&t);
+    CHECK(ln_stats_valid(&t) && ln_miss_pct(&t, 0, LN_REC) == -1 && ln_hard(&t, 0, LN_REC) == 0, "new stats");
+    ln_build(&s, &t, &r, 10, 0u, 7);
+    tally_answer(&t, &s, &r, LN_RIGHT);  /* K shown: not counted */
+    CHECK(t.asked[0][LN_REC] == 0, "a new character shown is not an answer");
+    while ((c = at_card(&r)) != 0 && c->type == CARD_NEW)
+        tally_answer(&t, &s, &r, LN_RIGHT);
+    {
+        uint32_t ch = c->ch;
+        tally_answer(&t, &s, &r, LN_WRONG);
+        CHECK(t.asked[ch][LN_REC] == 1 && t.wrong[ch][LN_REC] == 1 && t.lapse[ch][LN_REC] == 0,
+              "first ask wrong: 1 of 1, no lapse from box 0");
+        CHECK(ln_miss_pct(&t, ch, LN_REC) == 100, "100 %% missed");
+        while ((c = at_card(&r)) != 0)
+            tally_answer(&t, &s, &r, LN_RIGHT);
+        CHECK(t.asked[ch][LN_REC] == 1, "the ask again (after hearing it) is not counted (%u)", t.asked[ch][LN_REC]);
+    }
+    CHECK(ln_stats_valid(&t), "still valid");
+    /* by hand: the recent window and what it makes hard */
+    ln_init(&s);
+    ln_stats_init(&t);
+    r.n = 1, r.place = 0;
+    r.card[0].ch = 3, r.card[0].dir = LN_REC, r.card[0].type = CARD_HEAR_CHOOSE, r.card[0].again = 0;
+#define ONE(res) (r.at = 0, ln_tally(&t, &s, &r, res))
+    ONE(LN_RIGHT), ONE(LN_RIGHT), ONE(LN_RIGHT);
+    CHECK(ln_hard(&t, 3, LN_REC) == 0, "three asks: too few to judge");
+    ONE(LN_WRONG);
+    CHECK(ln_hard(&t, 3, LN_REC) == 1 && ln_miss_pct(&t, 3, LN_REC) == 25, "1 wrong in 4: hard (%d %%)",
+          ln_miss_pct(&t, 3, LN_REC));
+    ONE(LN_ALMOST);
+    CHECK(t.near[3][LN_REC] == 1 && ln_miss_pct(&t, 3, LN_REC) == 30, "an almost is half a miss (%d %%)",
+          ln_miss_pct(&t, 3, LN_REC));
+    s.box[3][LN_REC] = 4;
+    ONE(LN_WRONG);
+    CHECK(t.lapse[3][LN_REC] == 1 && ln_hard(&t, 3, LN_REC) == 2, "wrong from box 4: a lapse; 2.5 of 6: very hard");
+    /* a hard card at the top box comes back sooner; its box stays */
+    s.box[3][LN_REC] = LN_TOP;
+    s.last[3][LN_REC] = 0;
+    s.round = 8;
+    CHECK(!ln_due(&s, 0, 3, LN_REC) && ln_due(&s, &t, 3, LN_REC), "box 5, very hard: due in 8 rounds, not 32");
+    s.round = 4;
+    ONE(LN_RIGHT);
+    CHECK(ln_hard(&t, 3, LN_REC) == 1 && !ln_due(&s, &t, 3, LN_REC), "one right: hard, not due in 4");
+    for (i = 0; i < 40; i++)
+        ONE(LN_RIGHT);
+    CHECK(ln_hard(&t, 3, LN_REC) == 0 && t.rq[3][LN_REC] <= LN_RECENT, "right again and again: no longer hard (%u/%u)",
+          t.rm[3][LN_REC], t.rq[3][LN_REC]);
+    CHECK(t.asked[3][LN_REC] == 47 && t.wrong[3][LN_REC] == 2 && t.lapse[3][LN_REC] == 1, "the totals stay");
+    CHECK(ln_stats_valid(&t), "valid after the window turned");
+    t.asked[3][LN_REC] = 0xFFFFu;
+    ONE(LN_RIGHT);
+    CHECK(t.asked[3][LN_REC] == 0x8000u && t.wrong[3][LN_REC] == 1 && ln_stats_valid(&t), "full: halved");
+    t.wrong[3][LN_REC] = 60000u;
+    CHECK(!ln_stats_valid(&t), "more wrong than asked: not valid");
+#undef ONE
+    /* a learner who misses R (index 3) one time in two: R gets asked more than K, which it never misses */
+    ln_init(&s);
+    ln_stats_init(&t);
+    for (rounds = 0; rounds < 300; rounds++) {
+        uint32_t x = rounds * 2654435761u;
+        ln_build(&s, &t, &r, 20, 0, rounds + 77);
+        while ((c = at_card(&r)) != 0) {
+            int res = LN_RIGHT;
+            x ^= x << 13, x ^= x >> 17, x ^= x << 5;
+            if (c->ch == 3 && c->type != CARD_NEW && (x & 1u))
+                res = LN_WRONG;
+            if (rounds >= 200 && c->type != CARD_NEW && !c->again)
+                asked_r += c->ch == 3, asked_k += c->ch == 0;
+            tally_answer(&t, &s, &r, res);
+        }
+        ln_finish(&s, &r);
+    }
+    CHECK(ln_miss_pct(&t, 3, LN_REC) >= 30 && ln_miss_pct(&t, 0, LN_REC) == 0, "R about half missed (%d %%), K none",
+          ln_miss_pct(&t, 3, LN_REC));
+    CHECK(t.lapse[3][LN_REC] > 0 && ln_hard(&t, 3, LN_REC) >= 1 && ln_hard(&t, 0, LN_REC) == 0, "R hard, K not");
+    CHECK(asked_r > asked_k, "R asked more often than K (%u, %u)", asked_r, asked_k);
+    CHECK(ln_valid(&s) && ln_stats_valid(&t), "both valid");
 }
 
 /* ----------------------------------------------------------------- content --- */
@@ -503,7 +599,7 @@ static void test_learn_hand(void)
     uint32_t i, n;
     ln_init(&s);
     /* almost: the box stays, asked again */
-    ln_build(&s, &r, 10, 0u, 3);
+    ln_build(&s, 0, &r, 10, 0u, 3);
     while ((c = ln_card(&r)) != 0 && c->type == CARD_NEW)
         ln_answer(&s, &r, LN_RIGHT);
     ln_answer(&s, &r, LN_RIGHT);
@@ -532,7 +628,7 @@ static void test_learn_hand(void)
     CHECK(s.box[5][LN_REC] == 1 && s.box[5][LN_SEND] == 0 && ln_valid(&s), "a step back");
     /* placement */
     ln_init(&s);
-    ln_build(&s, &r, 20, LN_PLACE, 9);
+    ln_build(&s, 0, &r, 20, LN_PLACE, 9);
     CHECK(r.n == LN_PLACE_N && r.place, "placement: ten cards (%u)", r.n);
     for (i = 0; i < r.n; i++) {
         uint32_t k;
@@ -557,7 +653,7 @@ static void test_learn_hand(void)
         s.box[i][LN_SEND] = i < 5 ? 3 : 0;
         s.last[i][LN_REC] = s.last[i][LN_SEND] = 19;
     }
-    ln_build(&s, &r, 20, 0u, 5);
+    ln_build(&s, 0, &r, 20, 0u, 5);
     {
         uint32_t weakn = 0, strongn = 0;
         for (i = 0; i < r.n; i++)
@@ -586,6 +682,7 @@ int main(void)
     test_learn();
     test_judge();
     test_learn_hand();
+    test_stats();
     test_content();
     printf("%d checks, %d failed\n", checks, fails);
     return fails != 0;
