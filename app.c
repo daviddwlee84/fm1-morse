@@ -4,6 +4,7 @@
  * sidetone's gates; it leaves key-down / key-up events with their times in a ring. The main loop decodes them, runs
  * the pages (flash cards, listening, rhythm drills), talks to the host and draws.
  * Protocol with the host: PROTOCOL.md in github.com/daviddwlee84/M-VAVE_FM-1 host/morse (the numbers below match its host/morse/protocol.py). */
+#include <stddef.h>
 #include "fastmath.h"
 #include "hostlink.c"
 #include "ledfx.c"
@@ -13,7 +14,7 @@
 #include "tone.c"
 
 #define FW_MAJOR 0u
-#define FW_MINOR 8u
+#define FW_MINOR 9u
 
 /* ---------------------------------------------------------------- protocol --- */
 #define MO_VER 1u
@@ -45,7 +46,8 @@ enum { PD_LOADED, PD_DECLINED, PD_BAD };   /* T_PROG_DONE's answer to a load */
 
 /* ---------------------------------------------------------------- settings --- */
 #define REC_MAGIC 0x4D4F5231u            /* "MOR1"; another magic, or a record that does not make sense: defaults */
-#define REC_VER 1u                       /* 0.2 kept 0.1's layout: its spare bytes became look, send, prog */
+#define REC_VER 2u                       /* 0.9: the stats after the progress. 1: 0.1-0.8 (0.2 kept 0.1's layout: its
+                                          * spare bytes became look, send, prog), loaded with the stats empty */
 enum { LM_SOUND, LM_VISUAL };            /* how to learn: by sound (recommended), by sight */
 enum { KV_TEXT, KV_CODE, KV_TIMING, KV_N };   /* the KEY page's view */
 enum { TL_ALPHA, TL_PIANO, TL_KOCH, TL_N };   /* the TYPE page's letters on the keys */
@@ -75,7 +77,10 @@ typedef struct {
     uint16_t ver, size;
     set_t set;
     ln_state_t ln;
+    ln_stats_t st;                       /* 0.9: how each card has gone (learn.h); not in a backup */
 } rec_t;
+#define REC1_SIZE ((uint32_t)offsetof(rec_t, st))   /* REC_VER 1's record: the same, up to the stats */
+typedef char rec1_is_0_8s[offsetof(rec_t, st) == 280u ? 1 : -1];   /* what 0.1-0.8 wrote */
 static rec_t rec;
 #define SET (rec.set)
 #define SEND_DEFAULT 10u                 /* a beginner's hand: a 120 ms dit (the START preset) */
@@ -117,6 +122,20 @@ static int set_valid(const set_t *s)
            && flags_valid(s->flags) && s->cards >= 10u && s->cards <= 30u && s->learn <= LM_VISUAL && s->pitch >= 300u
            && s->pitch <= 1200u && (s->look & 3u) < KV_N && (s->look >> 3 & 3u) < TL_N
            && s->send >= 5u && s->send <= 40u && s->prog < LP_N;
+}
+
+/* the record from the store into r: 1 when it is one (this version, or 1 with the stats empty). 0.8 and before
+ * take only a version 1 record: going back to them starts over (docs/dev/morse.md) */
+static int rec_load(rec_t *r)
+{
+    int n = plat_store_load(OBJ_MORSE, r, sizeof *r);
+    if (n < (int)REC1_SIZE || r->magic != REC_MAGIC)
+        return 0;
+    if (r->ver == 1u && r->size == REC1_SIZE && n == (int)REC1_SIZE) {
+        ln_stats_init(&r->st);
+        return 1;
+    }
+    return r->ver == REC_VER && r->size == sizeof *r && n == (int)sizeof *r && ln_stats_valid(&r->st);
 }
 
 static uint32_t saves;                   /* records written since boot */
@@ -204,6 +223,7 @@ static struct {
 static struct {
     uint8_t page, back, sel;             /* sel: the menu's / the settings' cursor */
     uint8_t csel;                        /* the chart's */
+    uint8_t cmiss;                       /* the chart coloured by misses instead of level (SEQ; not saved) */
     uint8_t redraw;                      /* bits: R_* */
     uint32_t keys, btn;
     char msg[2][24];
@@ -782,8 +802,7 @@ int app_ble_save(const struct plat_ble_rec *r)
 int morse_ble_off(void)
 {
     static rec_t r;
-    if (plat_store_load(OBJ_MORSE, &r, sizeof r) != (int)sizeof r || r.magic != REC_MAGIC || r.ver != REC_VER
-        || r.size != sizeof r || !flags_valid(r.set.flags))
+    if (!rec_load(&r) || !flags_valid(r.set.flags))
         return 0;
     return r.set.flags >> 1 & 1;
 }
@@ -930,7 +949,7 @@ static void practice_start(void)
         }
         flags |= LN_PLACE;
     }
-    ln_build(&rec.ln, &pr.r, SET.cards, flags, plat_ms() * 2654435761u + rec.ln.round);
+    ln_build(&rec.ln, &rec.st, &pr.r, SET.cards, flags, plat_ms() * 2654435761u + rec.ln.round);
     pr.active = 1;
     pr.opened = 0;
     pr.hand = 0;
@@ -944,7 +963,7 @@ static void practice_answer(int res)
     if (!c || pr.ps != PS_CARD)
         return;
     if (c->type == CARD_NEW) {           /* only shown: on to the next */
-        ln_answer(&rec.ln, &pr.r, LN_RIGHT);
+        ln_answer(&rec.ln, &pr.r, LN_RIGHT);   /* (not an answer: nothing to tally) */
         play_stop(&ptx);
         card_present();
         return;
@@ -956,6 +975,7 @@ static void practice_answer(int res)
     if (pr.has_j)
         pr.j = mo_judge(pr.am, pr.ag, pr.an, mo_code(ln_char(c->ch)), pr.unit0);
     pr.ratio10 = card_key(c) ? mo_dec_ratio10(&dsrc[SRC_OWN].dec) : 0u;
+    ln_tally(&rec.st, &rec.ln, &pr.r, res);
     ln_answer(&rec.ln, &pr.r, res);
     pr.ps = PS_RESULT;
     pr.answer_ok = 0;
@@ -2009,7 +2029,11 @@ static void input(void)
                 look_set(2, 1u, !tlabel());
             else if (ui.page == PG_LISTEN)
                 look_set(5, 1u, !lhide());
-            else if (ui.page == PG_PRACTICE && !visual()) {   /* a peek at the code: a new letter, an answer */
+            else if (ui.page == PG_CHART && !pg.edit) {   /* the chart by level, or by how often it was missed */
+                ui.cmiss = (uint8_t)!ui.cmiss;
+                ui.redraw |= R_MAIN | R_FOOT;
+                break;
+            } else if (ui.page == PG_PRACTICE && !visual()) {   /* a peek at the code: a new letter, an answer */
                 const ln_card_t *pc = ln_card(&pr.r);
                 if ((pr.ps == PS_CARD && pc && pc->type == CARD_NEW) || (pr.ps == PS_RESULT && !pr.has_j)) {
                     pr.peek = (uint8_t)!pr.peek;
@@ -2647,7 +2671,7 @@ static void practice_at(int32_t oy)      /* drawn twice, each half with the rows
             text_c(120, y - oy, &FONT_M, t, C_WHITE);
             y += 40;
             t[0] = 0;
-            int_cat(t, (int32_t)ln_due_count(s));
+            int_cat(t, (int32_t)ln_due_count(s, &rec.st));
             text_cat(t, " DUE   ");
             int_cat(t, (int32_t)ln_new_count(s));
             text_cat(t, " NEW   ");
@@ -2892,20 +2916,42 @@ static void rhythm_at(int32_t oy)
     cv_text(8, 126 - oy, &FONT_XS, t, C_GRAY);
 }
 
-static void chart_at(int32_t oy)         /* the course like a kana chart: 7 x 6, coloured by box */
+static int32_t miss_pct(uint32_t i)      /* a character's misses, both cards together, in percent; -1 never asked */
+{
+    const ln_stats_t *t = &rec.st;
+    uint32_t a = (uint32_t)t->asked[i][LN_REC] + t->asked[i][LN_SEND];
+    uint32_t m = 2u * ((uint32_t)t->wrong[i][LN_REC] + t->wrong[i][LN_SEND]) + t->near[i][LN_REC] + t->near[i][LN_SEND];
+    return a ? (int32_t)((m * 100u + a) / (2u * a)) : -1;
+}
+
+static uint32_t char_hard(uint32_t i)    /* the harder of its two cards (learn.h ln_hard) */
+{
+    uint32_t a = ln_hard(&rec.st, i, LN_REC), b = ln_hard(&rec.st, i, LN_SEND);
+    return a > b ? a : b;
+}
+
+static uint16_t miss_rgb(int32_t p)      /* CHART by misses: green seldom missed .. red often */
+{
+    return p < 0 ? RGB(44, 44, 52) : level_rgb(p < 5 ? 5u : p < 10 ? 4u : p < 20 ? 3u : p < 30 ? 2u : p < 45 ? 1u : 0u);
+}
+
+static void chart_at(int32_t oy)         /* the course like a kana chart: 7 x 6, coloured by box (SEQ: by misses) */
 {
     char t[2] = {0, 0};
     uint32_t i;
     for (i = 0; i < LN_N; i++) {
         int32_t x = 2 + (int32_t)(i % 7u) * 34, y = 2 + (int32_t)(i / 7u) * 28 - oy;
         const ln_state_t *st = chart_state();
-        int open = i < st->open;
-        uint16_t bg = open ? level_rgb(ln_level(st, i)) : RGB(20, 20, 24);
+        int open = i < st->open, by_miss = ui.cmiss && !pg.edit;
+        uint16_t bg = by_miss ? miss_rgb(miss_pct(i)) : open ? level_rgb(ln_level(st, i)) : RGB(20, 20, 24);
+        uint32_t h = char_hard(i);
         if (i == ui.csel)
             cv_rect(x - 2, y - 2, 36, 30, pg.edit ? C_MEH : C_WHITE);
         cv_rect(x, y, 32, 26, bg);
+        if (h && !by_miss)               /* missed often lately: it comes back sooner than its box says */
+            cv_rect(x + 25, y + 2, 5, 5, h > 1u ? C_BAD : C_MEH);
         t[0] = ln_char(i);
-        text_c(x + 16, y + 5, &FONT_B, t, open ? C_WHITE : C_DIM);
+        text_c(x + 16, y + 5, &FONT_B, t, open || (by_miss && miss_pct(i) >= 0) ? C_WHITE : C_DIM);
     }
 }
 
@@ -3046,11 +3092,36 @@ static void draw_main(void)
     }
 }
 
+static void stat_cat(char *t, const char *what, uint32_t i, int dir)   /* "HEAR 17% OF 18" */
+{
+    int32_t p = ln_miss_pct(&rec.st, i, dir);
+    text_cat(t, what);
+    if (p < 0) {
+        text_cat(t, " -");
+        return;
+    }
+    text_cat(t, " ");
+    int_cat(t, p);
+    text_cat(t, "% OF ");
+    int_cat(t, rec.st.asked[i][dir]);
+}
+
+static void chart_stats_line(char *t, uint32_t i)   /* CHART's footer: how the letter under the cursor has gone */
+{
+    uint32_t l = (uint32_t)rec.st.lapse[i][LN_REC] + rec.st.lapse[i][LN_SEND];
+    stat_cat(t, "MISSED: HEAR", i, LN_REC);
+    stat_cat(t, "  SEND", i, LN_SEND);
+    if (l) {
+        text_cat(t, "  LOST ");
+        int_cat(t, (int32_t)l);
+    }
+}
+
 static void draw_footer(void)
 {
     static const char *const KV_NAME[KV_N] = {"SEQ: TEXT", "SEQ: CODE", "SEQ: TIMING"};
     const char *s = "";
-    char t[64];
+    char t[96];
     const ln_card_t *c = ln_card(&pr.r);
     uint32_t i;
     cv_begin(240, 32, C_BLACK);
@@ -3084,6 +3155,8 @@ static void draw_footer(void)
             text_cat(t, "  ");
             text_cat(t, p);
         }
+        text_cat(t, ui.cmiss ? "  SEQ level\n" : "  SEQ misses\n");
+        chart_stats_line(t, ui.csel);
         s = t;
         break;
     case PG_PRACTICE:
@@ -3102,7 +3175,7 @@ static void draw_footer(void)
     for (i = 0; s[i] && s[i] != '\n'; i++)
         ;
     if (s[i]) {                          /* two lines */
-        char a[48];
+        char a[64];
         uint32_t j;
         for (j = 0; j < i && j < sizeof a - 1u; j++)
             a[j] = s[j];
@@ -3158,6 +3231,7 @@ void app_panic(void) { tone_stop(); }
 /* ------------------------------------------------------------ the contract --- */
 void app_init(void)
 {
+    int ok;
     /* everything from nothing: the host simulator's reboot runs this again over the old RAM */
     zero(&ui, sizeof ui);
     zero(&pr, sizeof pr);
@@ -3178,13 +3252,14 @@ void app_init(void)
     key_input = own_midi = ptx_midi = 0;
     saves = 0;
     dirty_at = 0;
-    if (plat_store_load(OBJ_MORSE, &rec, sizeof rec) == (int)sizeof rec && rec.set.send == 0u)
+    ok = rec_load(&rec);
+    if (ok && rec.set.send == 0u)
         rec.set.send = SEND_DEFAULT;     /* a 0.1 record: it had no send speed */
-    if (rec.magic != REC_MAGIC || rec.ver != REC_VER || rec.size != sizeof rec || !set_valid(&rec.set)
-        || !ln_valid(&rec.ln)) {
+    if (!ok || !set_valid(&rec.set) || !ln_valid(&rec.ln)) {
         zero(&rec, sizeof rec);
         set_defaults();
         ln_init(&rec.ln);
+        ln_stats_init(&rec.st);
     }
     mo_keyer_init(&keyer, SET.keyer, mo_dit_ms(SET.send));
     mo_player_init(&ptx, mo_dit_ms(SET.wpm), mo_gap_ms(SET.wpm, SET.eff));
@@ -3389,6 +3464,24 @@ int app_expect(const char *what, int *got)
         *got = pr.peek;
     else if (!strcmp(what, "near"))
         *got = pr.r.near;
+    else if (!strcmp(what, "cmiss"))         /* CHART coloured by misses */
+        *got = ui.cmiss;
+    else if (!strcmp(what, "st_asked"))      /* the stats of the letter under CHART's cursor, both cards */
+        *got = rec.st.asked[ui.csel][LN_REC] + rec.st.asked[ui.csel][LN_SEND];
+    else if (!strcmp(what, "st_wrong"))
+        *got = rec.st.wrong[ui.csel][LN_REC] + rec.st.wrong[ui.csel][LN_SEND];
+    else if (!strcmp(what, "st_lapse"))
+        *got = rec.st.lapse[ui.csel][LN_REC] + rec.st.lapse[ui.csel][LN_SEND];
+    else if (!strcmp(what, "st_miss"))       /* in percent, -1 never asked */
+        *got = (int)miss_pct(ui.csel);
+    else if (!strcmp(what, "st_hard"))
+        *got = (int)char_hard(ui.csel);
+    else if (!strcmp(what, "st_all")) {      /* first asks answered, all letters */
+        uint32_t i, n = 0;
+        for (i = 0; i < LN_N; i++)
+            n += (uint32_t)rec.st.asked[i][LN_REC] + rec.st.asked[i][LN_SEND];
+        *got = (int)n;
+    }
     else
         return 0;
     return 1;

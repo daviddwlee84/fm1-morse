@@ -22,7 +22,7 @@ expect store_writes 0
 # ---- the host: HELLO once a second until it answers (version 1, firmware 0.8, transport USB) ("hello")
 sysex_out
 wait 1100
-expect_sysex F0 7D 4D 4F 01 41 01 00 08 00 F7
+expect_sysex F0 7D 4D 4F 01 41 01 00 09 00 F7
 expect host 0
 # HELLO_ACK ("hello_ack")
 sysex F0 7D 4D 4F 01 01 01 F7
@@ -499,6 +499,8 @@ expect round 1
 expect answered 7
 expect streak 1
 shot done.png
+# 0.9 the stats count first asks only: 3 asked (one wrong), not the repeats nor the one asked again
+expect st_all 3
 
 # ---- it all comes back after a power cycle (on the menu: START PAGE is MENU)
 reboot
@@ -510,6 +512,7 @@ expect page 1
 expect round 1
 expect answered 7
 expect ps 0
+expect st_all 3
 expect send 10
 expect preset 0
 expect tlayout 1
@@ -726,6 +729,23 @@ turn SELECT 5
 tap SEL
 wait 30
 expect page 6
+
+# ---- CHART by misses (0.9): SEQ switches the colours; the footer says how the letter under the cursor has gone
+# K: 8 first asks, the keyed one above wrong from box 2 or higher (a lapse): 13 %, and hard for now
+expect csel 0
+expect st_asked 8
+expect st_wrong 1
+expect st_lapse 1
+expect st_miss 13
+expect st_hard 1
+shot chart_stats.png
+tap SEQ
+wait 30
+expect cmiss 1
+shot chart_miss.png
+tap SEQ
+wait 30
+expect cmiss 0
 
 # ---- CHART's edit: a copy, saved only with PLAY twice
 tap REC

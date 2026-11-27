@@ -85,6 +85,32 @@ boxes come round more often. It is a simple form of spaced repetition.
 - The chart colours each letter by its boxes. You can mark letters known, open groups, step every
   box back when you are rusty, or take a placement test; each change waits for your `PLAY`.
 
+## How each letter has gone (0.9)
+
+**The problem.** A box only says where a card is now. A letter you missed ten times can still reach
+the top box, because Leitner forgives a miss completely once you climb again, and then it waits 32
+rounds while the letter is still shaky.
+
+**What others do.** Anki counts each card's *lapses* (how often a learnt card was forgotten) and
+calls a card that keeps lapsing a *leech*. ([Anki manual: leeches](https://docs.ankiweb.net/leeches.html))
+SuperMemo's SM-2 keeps an easiness factor per card that misses lower, so a hard card's intervals
+grow more slowly. ([SuperMemo on Wikipedia](https://en.wikipedia.org/wiki/SuperMemo))
+
+**In MORSE.**
+
+- Each card (a letter to recognise, a letter to send) counts its **first asks** in a round, how
+  many were **wrong**, how many **almost**, and its **lapses**: wrong while in box 2 or higher. The
+  ask again after a miss is not counted: you have just heard the answer.
+- CHART's footer shows them for the letter under the cursor; `SEQ` colours the whole chart by
+  misses instead of by level.
+- A card missed 20 % or more of its recent asks (an almost is half a miss) is **hard**: it is
+  scheduled as if it were one box lower; 40 % or more, two boxes lower. A top-box letter that is
+  very hard comes back every 8 rounds instead of 32. Its box, and the chart's level, stay. "Recent"
+  is the last 8 to 16 asks (halved every 16), so a letter you have mastered since stops being hard;
+  the totals on the chart keep the whole history.
+- The thresholds are our choices, in the spirit of SM-2's easiness and Anki's lapses, not values
+  from a study.
+
 ## What MORSE leaves to others
 
 Words, call signs, contest exchanges, long copy and talking to people are trained better elsewhere.
@@ -102,3 +128,5 @@ sound, and an even hand.
 - Farnsworth: [ARRL timing standard](https://uoxyc.github.io/morse/kodbok/fs_fansworth_x9004008.pdf),
   [ARRL code practice files](https://www.arrl.org/code-practice-files).
 - Leitner: [Wikipedia](https://en.wikipedia.org/wiki/Leitner_system).
+- Lapses and easiness: [Anki manual: leeches](https://docs.ankiweb.net/leeches.html),
+  [SuperMemo on Wikipedia](https://en.wikipedia.org/wiki/SuperMemo).
