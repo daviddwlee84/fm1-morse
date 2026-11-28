@@ -11,6 +11,11 @@ No FM-1 at hand? **[Try it in the browser](https://daviddwlee84.github.io/fm1-mo
 [fm1-emu](https://github.com/joakimeriksson/fm1-emu) emulator). Every page and button on one sheet:
 **[cheatsheet](https://daviddwlee84.github.io/fm1-morse/web/cheatsheet.html)**.
 
+**[MORSE practice](https://daviddwlee84.github.io/fm1-morse/web/learn/)** (no FM-1 at all): PRACTICE, LISTEN, KEY
+and CHART on a phone, installable and offline. The course is MORSE's own C (`learn.c`, `morse.c`, `content.c`) built
+to WebAssembly (`web/learn/build.sh`), the record it keeps is the FM-1's byte for byte, and its progress file is the
+backup above, so progress goes both ways. Touch: a pad to key on (two halves as paddles), four buttons to pick from.
+
 ![MORSE on the FM-1](docs/screen.png)
 
 ## What it does
