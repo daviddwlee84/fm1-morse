@@ -1,0 +1,278 @@
+{
+ "format": "fm1-morse-progress",
+ "version": 2,
+ "firmware": "0.8",
+ "round": 61,
+ "streak": 3,
+ "open": 30,
+ "answered": 1132,
+ "right": 987,
+ "chars": {
+  "K": {
+   "recognise": 5,
+   "send": 5,
+   "last_recognise": 59,
+   "last_send": 56
+  },
+  "M": {
+   "recognise": 5,
+   "send": 5,
+   "last_recognise": 55,
+   "last_send": 55
+  },
+  "U": {
+   "recognise": 5,
+   "send": 5,
+   "last_recognise": 56,
+   "last_send": 56
+  },
+  "R": {
+   "recognise": 5,
+   "send": 5,
+   "last_recognise": 58,
+   "last_send": 56
+  },
+  "E": {
+   "recognise": 5,
+   "send": 5,
+   "last_recognise": 54,
+   "last_send": 55
+  },
+  "S": {
+   "recognise": 5,
+   "send": 5,
+   "last_recognise": 54,
+   "last_send": 54
+  },
+  "N": {
+   "recognise": 5,
+   "send": 5,
+   "last_recognise": 54,
+   "last_send": 54
+  },
+  "A": {
+   "recognise": 5,
+   "send": 5,
+   "last_recognise": 55,
+   "last_send": 56
+  },
+  "P": {
+   "recognise": 3,
+   "send": 5,
+   "last_recognise": 59,
+   "last_send": 54
+  },
+  "T": {
+   "recognise": 5,
+   "send": 5,
+   "last_recognise": 54,
+   "last_send": 55
+  },
+  "L": {
+   "recognise": 5,
+   "send": 5,
+   "last_recognise": 55,
+   "last_send": 55
+  },
+  "W": {
+   "recognise": 5,
+   "send": 5,
+   "last_recognise": 59,
+   "last_send": 55
+  },
+  "I": {
+   "recognise": 5,
+   "send": 5,
+   "last_recognise": 54,
+   "last_send": 54
+  },
+  ".": {
+   "recognise": 5,
+   "send": 5,
+   "last_recognise": 56,
+   "last_send": 55
+  },
+  "J": {
+   "recognise": 5,
+   "send": 5,
+   "last_recognise": 55,
+   "last_send": 55
+  },
+  "Z": {
+   "recognise": 5,
+   "send": 3,
+   "last_recognise": 55,
+   "last_send": 59
+  },
+  "=": {
+   "recognise": 5,
+   "send": 5,
+   "last_recognise": 59,
+   "last_send": 59
+  },
+  "F": {
+   "recognise": 2,
+   "send": 5,
+   "last_recognise": 60,
+   "last_send": 55
+  },
+  "O": {
+   "recognise": 5,
+   "send": 5,
+   "last_recognise": 55,
+   "last_send": 54
+  },
+  "Y": {
+   "recognise": 5,
+   "send": 5,
+   "last_recognise": 55,
+   "last_send": 56
+  },
+  ",": {
+   "recognise": 5,
+   "send": 5,
+   "last_recognise": 56,
+   "last_send": 54
+  },
+  "V": {
+   "recognise": 5,
+   "send": 2,
+   "last_recognise": 60,
+   "last_send": 59
+  },
+  "G": {
+   "recognise": 5,
+   "send": 5,
+   "last_recognise": 54,
+   "last_send": 54
+  },
+  "5": {
+   "recognise": 5,
+   "send": 5,
+   "last_recognise": 56,
+   "last_send": 55
+  },
+  "/": {
+   "recognise": 5,
+   "send": 5,
+   "last_recognise": 54,
+   "last_send": 58
+  },
+  "Q": {
+   "recognise": 4,
+   "send": 2,
+   "last_recognise": 59,
+   "last_send": 59
+  },
+  "9": {
+   "recognise": 4,
+   "send": 4,
+   "last_recognise": 59,
+   "last_send": 60
+  },
+  "2": {
+   "recognise": 5,
+   "send": 3,
+   "last_recognise": 60,
+   "last_send": 59
+  },
+  "H": {
+   "recognise": 3,
+   "send": 0,
+   "last_recognise": 59,
+   "last_send": 60
+  },
+  "3": {
+   "recognise": 3,
+   "send": 2,
+   "last_recognise": 59,
+   "last_send": 59
+  },
+  "8": {
+   "recognise": 0,
+   "send": 0,
+   "last_recognise": null,
+   "last_send": null
+  },
+  "B": {
+   "recognise": 0,
+   "send": 0,
+   "last_recognise": null,
+   "last_send": null
+  },
+  "?": {
+   "recognise": 0,
+   "send": 0,
+   "last_recognise": null,
+   "last_send": null
+  },
+  "4": {
+   "recognise": 0,
+   "send": 0,
+   "last_recognise": null,
+   "last_send": null
+  },
+  "7": {
+   "recognise": 0,
+   "send": 0,
+   "last_recognise": null,
+   "last_send": null
+  },
+  "C": {
+   "recognise": 0,
+   "send": 0,
+   "last_recognise": null,
+   "last_send": null
+  },
+  "1": {
+   "recognise": 0,
+   "send": 0,
+   "last_recognise": null,
+   "last_send": null
+  },
+  "D": {
+   "recognise": 0,
+   "send": 0,
+   "last_recognise": null,
+   "last_send": null
+  },
+  "6": {
+   "recognise": 0,
+   "send": 0,
+   "last_recognise": null,
+   "last_send": null
+  },
+  "0": {
+   "recognise": 0,
+   "send": 0,
+   "last_recognise": null,
+   "last_send": null
+  },
+  "X": {
+   "recognise": 0,
+   "send": 0,
+   "last_recognise": null,
+   "last_send": null
+  }
+ },
+ "settings": {
+  "hear_wpm": 20,
+  "spacing_wpm": 20,
+  "send_wpm": 18,
+  "pitch_hz": 600,
+  "keyer": "straight",
+  "paddles": "left_dit",
+  "sound": true,
+  "bluetooth": true,
+  "start_page": "practice",
+  "cards": 20,
+  "learn_by": "sound",
+  "judging": "rhythm",
+  "key_view": "text",
+  "type_layout": "white_black",
+  "type_shows_code": false,
+  "type_composes": false,
+  "listen_hides_text": false,
+  "listen_program": "koch"
+ }
+}

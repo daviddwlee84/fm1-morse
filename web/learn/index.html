@@ -1,0 +1,123 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- MORSE practice: MORSE's flash cards on a phone, without an FM-1. The learning is MORSE's own C (learn.c, morse.c,
+     content.c) built to WebAssembly (core.wasm, build.sh); the record it keeps is the FM-1's, byte for byte; the file
+     it trades is the backup MORSE on the web (../) and `morse backup` write. Works offline once opened (sw.js). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>MORSE practice</title>
+<meta name="description" content="MORSE's flash cards for Morse code on your phone: the FM-1 firmware's own course, offline.">
+<meta name="theme-color" content="#111114">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<style>
+  :root { --bg: #f6f6f3; --fg: #1b1b1f; --dim: #6b6b73; --card: #ffffff; --line: #dcdcd6; --accent: #0a72c2;
+          --ok: #1f9d55; --meh: #c98a00; --bad: #d0453a; --closed: #e6e6e1; --rx: #0a72c2; --own: #e08a00;
+          --l0: #e9e9e4; --l1: #f3c9c4; --l2: #f6dfa8; --l3: #dfe9a6; --l4: #b9e2b0; --l5: #8fd39a; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --bg: #111114; --fg: #ececf0; --dim: #9a9aa6; --card: #1b1b20; --line: #2c2c34;
+      --accent: #5ab4ff; --closed: #202026; --rx: #5ab4ff; --own: #ffb347;
+      --l0: #2a2a31; --l1: #5a2b29; --l2: #5d4a1f; --l3: #4b5520; --l4: #2f5a2c; --l5: #23733a; }
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.45 system-ui, -apple-system, sans-serif;
+         display: flex; flex-direction: column; overscroll-behavior: none; }
+  header { padding: calc(env(safe-area-inset-top) + 8px) 16px 6px; display: flex; align-items: baseline; gap: 10px; }
+  header h1 { font-size: 1.05rem; margin: 0; letter-spacing: .06em; }
+  header .dim { font-size: .85rem; }
+  main { flex: 1; overflow-y: auto; padding: 4px 16px 16px; max-width: 640px; width: 100%; margin: 0 auto; }
+  nav { display: flex; border-top: 1px solid var(--line); background: var(--card); padding-bottom: env(safe-area-inset-bottom); }
+  nav button { flex: 1; border: 0; background: none; color: var(--dim); font: 600 .78rem system-ui, sans-serif;
+               padding: 10px 0 12px; letter-spacing: .05em; }
+  nav button[aria-selected="true"] { color: var(--accent); }
+  section[hidden] { display: none; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin: 10px 0; }
+  .dim { color: var(--dim); }
+  .center { text-align: center; }
+  .big { font: 700 4.2rem/1.1 ui-monospace, "SF Mono", monospace; }
+  .mid { font: 700 1.6rem/1.2 system-ui, sans-serif; }
+  .ok { color: var(--ok); } .meh { color: var(--meh); } .bad { color: var(--bad); }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin: 10px 0 0; }
+  button.b { font: 600 1rem system-ui, sans-serif; padding: 12px 16px; border-radius: 10px; border: 1px solid var(--accent);
+             background: transparent; color: var(--accent); min-height: 48px; }
+  button.b.primary { background: var(--accent); color: var(--bg); }
+  button.b:disabled { opacity: .4; }
+  .grow { flex: 1; }
+  .choices { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
+  .choices button { font: 700 2.2rem ui-monospace, monospace; min-height: 84px; border-radius: 12px;
+                    border: 1px solid var(--line); background: var(--card); color: var(--fg); }
+  .choices button:active { background: var(--l0); }
+  .pad { margin-top: 14px; height: 38vh; min-height: 180px; border-radius: 16px; border: 2px solid var(--line);
+         background: var(--card); display: flex; touch-action: none; user-select: none; -webkit-user-select: none;
+         -webkit-touch-callout: none; overflow: hidden; }
+  .pad > div { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--dim);
+               font: 600 .95rem system-ui, sans-serif; letter-spacing: .08em; }
+  .pad > div + div { border-left: 1px dashed var(--line); }
+  .pad.down, .pad > div.down { background: var(--l4); color: var(--fg); }
+  .pad.off { opacity: .45; }
+  .lamp { width: 26px; height: 26px; border-radius: 50%; background: var(--closed); margin: 0 auto; transition: none; }
+  .lamp.on { background: var(--own); box-shadow: 0 0 18px var(--own); }
+  .code { font: 700 2rem ui-monospace, monospace; letter-spacing: .25em; }
+  .chart { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+  .chart button { position: relative; aspect-ratio: 1; border: 2px solid transparent; border-radius: 8px;
+                  font: 700 1.25rem ui-monospace, monospace; color: var(--fg); }
+  .chart button.sel { border-color: var(--accent); }
+  .chart button.closed { color: var(--dim); }
+  .chart button i { position: absolute; right: 4px; top: 3px; width: 7px; height: 7px; border-radius: 50%; background: var(--bad); }
+  .legend { display: flex; gap: 4px; align-items: center; font-size: .8rem; margin-top: 8px; flex-wrap: wrap; }
+  .legend > span:not(.dim) { width: 18px; height: 12px; border-radius: 3px; display: inline-block; }
+  label.f { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 9px 0;
+            border-bottom: 1px solid var(--line); }
+  label.f:last-child { border-bottom: 0; }
+  label.f select, label.f input[type=number] { font: inherit; padding: 6px 8px; border-radius: 8px;
+            border: 1px solid var(--line); background: var(--bg); color: var(--fg); min-width: 110px; }
+  label.f input[type=number] { width: 90px; min-width: 0; text-align: right; }
+  .stepper { display: flex; align-items: center; gap: 6px; }
+  .stepper button { width: 40px; height: 36px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg);
+                    color: var(--fg); font: 600 1.1rem system-ui; }
+  .stepper output { min-width: 3.2em; text-align: center; font-variant-numeric: tabular-nums; }
+  .listen-text { font: 600 1.3rem/1.6 ui-monospace, monospace; word-break: break-word; min-height: 3.2em; }
+  .listen-text .now { color: var(--accent); }
+  .hidden-text { filter: blur(9px); }
+  svg.bars { width: 100%; height: 54px; display: block; }
+  .toast { position: fixed; left: 50%; bottom: 84px; transform: translateX(-50%); background: var(--fg); color: var(--bg);
+           padding: 8px 14px; border-radius: 10px; font-size: .9rem; opacity: 0; transition: opacity .2s; pointer-events: none;
+           max-width: 90vw; text-align: center; }
+  .toast.show { opacity: .94; }
+  code { font-family: ui-monospace, monospace; font-size: .9em; }
+  a { color: var(--accent); }
+  h2 { font-size: 1rem; margin: 0 0 6px; }
+  p { margin: 6px 0; }
+  .file { display: inline-flex; align-items: center; justify-content: center; }
+  .file input { display: none; }
+</style>
+</head>
+<body>
+<header><h1>MORSE</h1><span class="dim" id="hdr"></span></header>
+<main>
+  <section id="pg-practice"></section>
+  <section id="pg-listen" hidden></section>
+  <section id="pg-key" hidden></section>
+  <section id="pg-chart" hidden></section>
+  <section id="pg-settings" hidden></section>
+  <div id="padwrap"></div>
+</main>
+<nav id="nav">
+  <button data-pg="practice" aria-selected="true">PRACTICE</button>
+  <button data-pg="listen">LISTEN</button>
+  <button data-pg="key">KEY</button>
+  <button data-pg="chart">CHART</button>
+  <button data-pg="settings">SETTINGS</button>
+</nav>
+<div class="toast" id="toast"></div>
+<noscript><p style="padding:16px">MORSE practice needs JavaScript and WebAssembly.</p></noscript>
+<script type="module" src="app.js"></script>
+</body>
+</html>
